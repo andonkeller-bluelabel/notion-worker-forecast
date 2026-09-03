@@ -142,10 +142,11 @@ export async function writeValues(
   spreadsheetId: string,
   a1Anchor: string,
   values: ValueGrid,
+  valueInputOption: "RAW" | "USER_ENTERED" = "RAW",
 ): Promise<void> {
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
-    `/values/${encodeURIComponent(a1Anchor)}?valueInputOption=RAW`;
+    `/values/${encodeURIComponent(a1Anchor)}?valueInputOption=${valueInputOption}`;
   await sheetsRequestJson(token, url, "values.update", { method: "PUT", body: { values } });
 }
 

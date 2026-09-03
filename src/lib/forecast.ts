@@ -14,10 +14,13 @@
  */
 
 export type Segment = {
+  dealId: string;
   dealTitle: string;
+  dealUrl: string;
   clientAccount: string;
   clientPartner: string;
   stage: string;
+  contractType: string;
   deliveryPhase: string; // joined multi-select, e.g. "Discover, Deploy"
   billingBasis: string;
   weeklyRevenue: number;
@@ -71,7 +74,7 @@ function overlapDays(aStart: number, aEnd: number, bStart: number, bEnd: number)
  * clamped to [MIN_MONTH, MAX_MONTH]. Returns [] when it can't be prorated
  * (missing/!+ve rate, missing dates, or end <= start).
  */
-export function spreadSegment(seg: Segment): { month: string; committed: number; weighted: number }[] {
+export function spreadSegment(seg: Segment): { month: string; amount: number; committed: number; weighted: number }[] {
   const start = parseISO(seg.start);
   const end = parseISO(seg.end);
   if (start == null || end == null || end <= start || !(seg.weeklyRevenue > 0)) return [];
@@ -87,7 +90,7 @@ export function spreadSegment(seg: Segment): { month: string; committed: number;
   const winEnd = Math.min(end, clampHi);
   if (winEnd <= winStart) return [];
 
-  const out: { month: string; committed: number; weighted: number }[] = [];
+  const out: { month: string; amount: number; committed: number; weighted: number }[] = [];
   let y = new Date(winStart).getUTCFullYear();
   let mo = new Date(winStart).getUTCMonth();
   // Walk months until we pass winEnd.
@@ -97,8 +100,8 @@ export function spreadSegment(seg: Segment): { month: string; committed: number;
     const monthEnd = Date.UTC(y, mo + 1, 1); // exclusive
     const days = overlapDays(winStart, winEnd, monthStart, monthEnd);
     if (days > 0) {
-      const amount = seg.weeklyRevenue * (days / 7);
-      out.push({ month: monthKey(y, mo), committed: isWon ? amount : 0, weighted: amount * prob });
+      const amount = seg.weeklyRevenue * (days / 7); // raw (unweighted) revenue
+      out.push({ month: monthKey(y, mo), amount, committed: isWon ? amount : 0, weighted: amount * prob });
     }
     mo += 1;
     if (mo > 11) {
@@ -106,6 +109,37 @@ export function spreadSegment(seg: Segment): { month: string; committed: number;
       y += 1;
     }
   }
+  return out;
+}
+
+/** "YYYY-MM" → "YYYY.Q#" (e.g. "2026-08" → "2026.Q3"). */
+export function monthToQuarter(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  return `${y}.Q${Math.floor((m! - 1) / 3) + 1}`;
+}
+
+/** N consecutive month keys starting at a base "YYYY-MM" (default: current UTC month). */
+export function monthsFrom(count: number, base?: string): string[] {
+  const now = new Date();
+  let y = base ? Number(base.slice(0, 4)) : now.getUTCFullYear();
+  let m = base ? Number(base.slice(5, 7)) - 1 : now.getUTCMonth();
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(monthKey(y, m));
+    if (++m > 11) {
+      m = 0;
+      y++;
+    }
+  }
+  return out;
+}
+
+/** All quarter keys from MIN_MONTH..MAX_MONTH inclusive, e.g. ["2026.Q1", … "2028.Q4"]. */
+export function quartersRange(): string[] {
+  const out: string[] = [];
+  const [minY] = MIN_MONTH.split("-").map(Number);
+  const [maxY] = MAX_MONTH.split("-").map(Number);
+  for (let y = minY!; y <= maxY!; y++) for (let q = 1; q <= 4; q++) out.push(`${y}.Q${q}`);
   return out;
 }
 

@@ -67,10 +67,12 @@ function multiSelectNames(prop: unknown): string {
 }
 
 const P = {
+  deal: "Deal",
   dealTitle: "Deal Title",
   clientAccount: "Client Account (Plain Text)",
   clientPartner: "Client Partner (Plain Text)",
   stage: "Deal Stage",
+  contractType: "Deal Contract Type",
   deliveryPhase: "Delivery Phase",
   billingBasis: "Billing Basis",
   weeklyRevenue: "Weekly Revenue",
@@ -80,12 +82,22 @@ const P = {
   archived: "Archived",
 } as const;
 
+/** First related page id from a relation property. */
+function relationId(prop: unknown): string {
+  const p = prop as { type?: string; relation?: { id?: string }[] } | undefined;
+  return p?.type === "relation" && p.relation?.[0]?.id ? p.relation[0].id : "";
+}
+
 function toSegment(props: Props): Segment {
+  const dealId = relationId(props[P.deal]);
   return {
+    dealId,
     dealTitle: notionPropertyToString(props[P.dealTitle]) ?? "",
+    dealUrl: dealId ? `https://www.notion.so/${dealId.replace(/-/g, "")}` : "",
     clientAccount: notionPropertyToString(props[P.clientAccount]) ?? "",
     clientPartner: notionPropertyToString(props[P.clientPartner]) ?? "",
     stage: selectName(props[P.stage]),
+    contractType: selectName(props[P.contractType]),
     deliveryPhase: multiSelectNames(props[P.deliveryPhase]),
     billingBasis: selectName(props[P.billingBasis]),
     weeklyRevenue: numberOf(props[P.weeklyRevenue]),

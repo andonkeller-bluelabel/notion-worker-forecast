@@ -6,10 +6,13 @@ import assert from "node:assert/strict";
 import { spreadSegment, computeFacts, factsToGrid, FACT_HEADERS, type Segment } from "./forecast.js";
 
 const base: Omit<Segment, "start" | "end" | "weeklyRevenue" | "stageProbability"> = {
+  dealId: "d1",
   dealTitle: "Acme",
+  dealUrl: "https://www.notion.so/d1",
   clientAccount: "Acme Co",
   clientPartner: "Ryan",
   stage: "Won",
+  contractType: "Sprints | Fixed Amount",
   deliveryPhase: "Deploy",
   billingBasis: "Per Week",
 };
