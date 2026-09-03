@@ -64,9 +64,18 @@ const WHITE = { red: 1, green: 1, blue: 1 };
 const GREY_TEXT = { red: 0.6, green: 0.6, blue: 0.6 };
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
-/** Per-probability header colors for the By Stage views. Fill in from the user's palette. */
+/** Per-probability header colors for the By Stage views (Google "light 3" palette). */
+const LIGHT_GREEN = { red: 0.84705883, green: 0.91764706, blue: 0.827451 };
+const LIGHT_BLUE = { red: 0.8117647, green: 0.8862745, blue: 0.9529412 };
+const LIGHT_PURPLE = { red: 0.8509804, green: 0.8235294, blue: 0.9137255 };
+const LIGHT_MAGENTA = { red: 0.91764706, green: 0.81960785, blue: 0.8627451 };
 const STAGE_COLORS: Record<number, unknown> = {
-  // e.g. 100: {red,green,blue}, 80: {...}, ... (percent → color). Missing → GREEN.
+  100: LIGHT_GREEN,
+  80: LIGHT_GREEN,
+  60: LIGHT_BLUE,
+  40: LIGHT_PURPLE,
+  20: LIGHT_PURPLE,
+  0: LIGHT_MAGENTA,
 };
 
 type ColoredRow = { row: number; bg: unknown };
