@@ -81,17 +81,37 @@ async function sheetsRequestJson<T>(
 
 /** The set of tab titles in a spreadsheet. */
 export async function getSheetTitles(token: string, spreadsheetId: string): Promise<Set<string>> {
+  const meta = await getSheetMeta(token, spreadsheetId);
+  return new Set(meta.map((m) => m.title));
+}
+
+/** Tab title → numeric sheetId (needed to target pivots / grid ranges). */
+export async function getSheetMeta(token: string, spreadsheetId: string): Promise<{ title: string; sheetId: number }[]> {
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
-    `?fields=sheets.properties.title`;
-  const json = await sheetsRequestJson<{ sheets?: { properties?: { title?: string } }[] }>(
+    `?fields=sheets.properties(sheetId,title)`;
+  const json = await sheetsRequestJson<{ sheets?: { properties?: { sheetId?: number; title?: string } }[] }>(
     token,
     url,
     "spreadsheets.get",
   );
-  const titles = new Set<string>();
-  for (const s of json.sheets ?? []) if (s.properties?.title) titles.add(s.properties.title);
-  return titles;
+  const out: { title: string; sheetId: number }[] = [];
+  for (const s of json.sheets ?? []) {
+    if (s.properties?.title && typeof s.properties.sheetId === "number") {
+      out.push({ title: s.properties.title, sheetId: s.properties.sheetId });
+    }
+  }
+  return out;
+}
+
+/** Run a spreadsheets.batchUpdate with arbitrary requests; returns the raw reply. */
+export async function batchUpdate(
+  token: string,
+  spreadsheetId: string,
+  requests: unknown[],
+): Promise<{ replies?: unknown[] }> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  return sheetsRequestJson(token, url, "spreadsheets.batchUpdate", { method: "POST", body: { requests } });
 }
 
 /** Create a tab if it doesn't already exist. */
