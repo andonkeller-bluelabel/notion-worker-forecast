@@ -30,13 +30,15 @@ worker.webhook("renderForecastViews", {
         const deals = aggregateDeals(await readSegments(notion));
 
         const quarters = quartersRange();
-        const months = monthsFrom(13); // this month + 12
-        const identity = (m: string) => m;
+        // Monthly headers use the "2026.09" dot form (matching the "2026.Qx" quarters);
+        // monthLabel converts a byMonth key ("2026-09") to the same, so lookups still match.
+        const monthLabel = (m: string) => m.replace("-", ".");
+        const months = monthsFrom(13).map(monthLabel); // this month + 12
 
         await renderPartnerClientView(token, sheetId, "By Client", deals, quarters, monthToQuarter);
-        await renderPartnerClientView(token, sheetId, "By Client | Monthly", deals, months, identity);
+        await renderPartnerClientView(token, sheetId, "By Client | Monthly", deals, months, monthLabel);
         await renderProbabilityView(token, sheetId, "Pipeline", deals, quarters, monthToQuarter);
-        await renderProbabilityView(token, sheetId, "Pipeline | Monthly", deals, months, identity);
+        await renderProbabilityView(token, sheetId, "Pipeline | Monthly", deals, months, monthLabel);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
 
         const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Client (Q+M), Pipeline (Q+M).`;
