@@ -62,6 +62,7 @@ const GRAY = { red: 0.94, green: 0.94, blue: 0.94 };
 const BLACK = { red: 0, green: 0, blue: 0 };
 const WHITE = { red: 1, green: 1, blue: 1 };
 const GREY_TEXT = { red: 0.6, green: 0.6, blue: 0.6 };
+const ZERO_GREY = { red: 0.85098039, green: 0.85098039, blue: 0.85098039 }; // #d9d9d9 — muted text for $0 deal cells
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
 /** Per-probability header colors for the By Stage views (Google "light 3" palette). */
@@ -113,13 +114,16 @@ async function writeOutline(
   if (grid.length > 1) await writeValues(token, spreadsheetId, `${tab}!A2`, grid.slice(1), "USER_ENTERED");
 
   const struct = (await getSheetStructure(token, spreadsheetId)) as {
-    sheets?: { properties?: { title?: string; sheetId?: number }; rowGroups?: { range?: unknown }[] }[];
+    sheets?: { properties?: { title?: string; sheetId?: number }; rowGroups?: { range?: unknown }[]; conditionalFormats?: unknown[] }[];
   };
   const sheet = (struct.sheets ?? []).find((s) => s.properties?.title === tab)!;
   const sheetId = sheet.properties!.sheetId!;
 
   const reqs: unknown[] = [];
   for (const g of sheet.rowGroups ?? []) if (g.range) reqs.push({ deleteDimensionGroup: { range: g.range } });
+  // Drop existing conditional-format rules (high→low index) so we can re-add ours idempotently.
+  const cfCount = sheet.conditionalFormats?.length ?? 0;
+  for (let i = cfCount - 1; i >= 0; i--) reqs.push({ deleteConditionalFormatRule: { sheetId, index: i } });
   // Reset the whole sheet to a clean baseline (white bg, black text, size 10, not bold, no number fmt).
   reqs.push({
     repeatCell: {
@@ -162,6 +166,16 @@ async function writeOutline(
     },
   });
   for (const g of opts.groups) reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
+  // Conditional format: muted grey text on $0 deal cells (blank group-row cells aren't numbers, so untouched).
+  reqs.push({
+    addConditionalFormatRule: {
+      index: 0,
+      rule: {
+        ranges: [{ sheetId, startRowIndex: 1, endRowIndex: grid.length, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width }],
+        booleanRule: { condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "0" }] }, format: { textFormat: { foregroundColor: ZERO_GREY } } },
+      },
+    },
+  });
   await batchUpdate(token, spreadsheetId, reqs);
 }
 

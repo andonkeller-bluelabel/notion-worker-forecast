@@ -139,11 +139,11 @@ export async function getCellFormat(token: string, spreadsheetId: string, a1Rang
   return sheetsRequestJson(token, url, "spreadsheets.get.cellFormat");
 }
 
-/** Get a tab's structural facts: gridProperties (frozen/size), rowGroups, merges. */
+/** Get a tab's structural facts: gridProperties (frozen/size), rowGroups, merges, conditional formats. */
 export async function getSheetStructure(token: string, spreadsheetId: string): Promise<unknown> {
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
-    `?fields=${encodeURIComponent("sheets(properties(sheetId,title,gridProperties),rowGroups,merges)")}`;
+    `?fields=${encodeURIComponent("sheets(properties(sheetId,title,gridProperties),rowGroups,merges,conditionalFormats)")}`;
   return sheetsRequestJson(token, url, "spreadsheets.get.structure");
 }
 
