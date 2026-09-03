@@ -7,7 +7,7 @@
 import { worker, googleAuth } from "../worker.js";
 import { getSheetStructure, getValues, getCellFormat, getRangeValueFormats } from "../lib/sheets.js";
 
-const TAB = process.env.INSPECT_TAB || "By Client — Quarterly";
+const TAB = process.env.INSPECT_TAB || "By Client";
 
 worker.webhook("inspectSheet", {
   title: "Inspect Sheet (temp)",

@@ -1,7 +1,7 @@
 /**
  * renderForecastViews webhook — writes the four Current2-style outline views:
- *   • By Client — Quarterly / Monthly   (group: Client Partner → Client)
- *   • By Stage  — Quarterly / Monthly   (group: probability %, deals by partner+title)
+ *   • By Client / By Client | Monthly   (group: Client Partner → Client)
+ *   • Pipeline  / Pipeline | Monthly     (group: probability %, deals by partner+title)
  * Collapsible native row groups, deal hyperlinks, accounting `$ -`, raw revenue.
  * Also removes the superseded raw-pivot / (AI) preview tabs. Payload ignored.
  */
@@ -19,7 +19,7 @@ const OBSOLETE_TABS = ["By Client — Quarterly (AI)", "By Stage", "By Client Ac
 worker.webhook("renderForecastViews", {
   title: "Render Forecast Views",
   description:
-    "Writes the four outline views — By Client (Quarterly + Monthly) and By Stage (Quarterly + Monthly) — into the " +
+    "Writes the four outline views — By Client (+ Monthly) and Pipeline (+ Monthly) — into the " +
     "Forecast Dashboard sheet. Deal-level rows, collapsible groups, raw revenue per period. Errors → #forecast-ops.",
   execute: async (events, { notion }) => {
     for (const _event of events) {
@@ -33,13 +33,13 @@ worker.webhook("renderForecastViews", {
         const months = monthsFrom(13); // this month + 12
         const identity = (m: string) => m;
 
-        await renderPartnerClientView(token, sheetId, "By Client — Quarterly", deals, quarters, monthToQuarter);
-        await renderPartnerClientView(token, sheetId, "By Client — Monthly", deals, months, identity);
-        await renderProbabilityView(token, sheetId, "By Stage — Quarterly", deals, quarters, monthToQuarter);
-        await renderProbabilityView(token, sheetId, "By Stage — Monthly", deals, months, identity);
+        await renderPartnerClientView(token, sheetId, "By Client", deals, quarters, monthToQuarter);
+        await renderPartnerClientView(token, sheetId, "By Client | Monthly", deals, months, identity);
+        await renderProbabilityView(token, sheetId, "Pipeline", deals, quarters, monthToQuarter);
+        await renderProbabilityView(token, sheetId, "Pipeline | Monthly", deals, months, identity);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
 
-        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Client (Q+M), By Stage (Q+M).`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Client (Q+M), Pipeline (Q+M).`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {
