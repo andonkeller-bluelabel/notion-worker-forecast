@@ -113,6 +113,32 @@ export async function getValues(token: string, spreadsheetId: string, a1Range: s
   return json.values ?? [];
 }
 
+/** Read [value, backgroundColor] for each cell in a single-column range. */
+export async function getRangeValueFormats(
+  token: string,
+  spreadsheetId: string,
+  a1Range: string,
+): Promise<{ value: string; bg: unknown }[]> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `?ranges=${encodeURIComponent(a1Range)}` +
+    `&fields=${encodeURIComponent("sheets.data.rowData.values(formattedValue,effectiveFormat.backgroundColor)")}`;
+  const json = (await sheetsRequestJson(token, url, "spreadsheets.get.rangeVF")) as {
+    sheets?: { data?: { rowData?: { values?: { formattedValue?: string; effectiveFormat?: { backgroundColor?: unknown } }[] }[] }[] }[];
+  };
+  const rows = json.sheets?.[0]?.data?.[0]?.rowData ?? [];
+  return rows.map((r) => ({ value: r.values?.[0]?.formattedValue ?? "", bg: r.values?.[0]?.effectiveFormat?.backgroundColor ?? {} }));
+}
+
+/** Read the effective text/background format of a single cell (for matching colors). */
+export async function getCellFormat(token: string, spreadsheetId: string, a1Range: string): Promise<unknown> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `?ranges=${encodeURIComponent(a1Range)}` +
+    `&fields=${encodeURIComponent("sheets.data.rowData.values.effectiveFormat(textFormat,backgroundColor)")}`;
+  return sheetsRequestJson(token, url, "spreadsheets.get.cellFormat");
+}
+
 /** Get a tab's structural facts: gridProperties (frozen/size), rowGroups, merges. */
 export async function getSheetStructure(token: string, spreadsheetId: string): Promise<unknown> {
   const url =

@@ -5,7 +5,7 @@
  */
 
 import { worker, googleAuth } from "../worker.js";
-import { getSheetStructure, getValues } from "../lib/sheets.js";
+import { getSheetStructure, getValues, getCellFormat, getRangeValueFormats } from "../lib/sheets.js";
 
 const TAB = process.env.INSPECT_TAB || "By Client — Quarterly";
 
@@ -30,5 +30,11 @@ worker.webhook("inspectSheet", {
     // Full header row across many columns to see the column order.
     const header = await getValues(token, sheetId, `${TAB}!1:1`);
     console.log(`[inspect] header=${JSON.stringify(header[0])}`);
+    // Contract Format cell format (to match the grey the user applied). C = By Client, D = By Stage.
+    // Column A label + background for each row (to capture per-group colors).
+    const colA = await getRangeValueFormats(token, sheetId, `${TAB}!A1:A80`);
+    for (const r of colA) {
+      if (r.value && Object.keys(r.bg as object).length) console.log(`[inspect] rowA "${r.value}" bg=${JSON.stringify(r.bg)}`);
+    }
   },
 });

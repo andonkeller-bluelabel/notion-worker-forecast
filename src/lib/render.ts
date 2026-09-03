@@ -1,7 +1,7 @@
 /**
  * Current2-style outline views written into the Forecast sheet:
- *   • By Client   — group by Client Partner → Client, deals beneath.
- *   • By Stage    — group by probability %, deals sorted by Client Partner then title.
+ *   • By Client — group by Client Partner → Client, deals beneath (blue client rows).
+ *   • By Stage  — group by probability %, deals sorted by Client Partner then title.
  * Both: collapsible native row groups, a Deal hyperlink, accounting `$ -` zeros,
  * period columns (quarters or months). Cells show RAW (unweighted) revenue.
  */
@@ -15,7 +15,6 @@ export type DealAgg = {
   dealUrl: string;
   clientPartner: string;
   client: string;
-  stage: string;
   contractType: string;
   probability: number; // 0..1
   byMonth: Map<string, number>; // raw $ per "YYYY-MM"
@@ -35,7 +34,6 @@ export function aggregateDeals(segments: Segment[]): DealAgg[] {
         dealUrl: s.dealUrl,
         clientPartner: s.clientPartner,
         client: s.clientAccount,
-        stage: s.stage,
         contractType: s.contractType,
         probability: s.stageProbability,
         byMonth: new Map(),
@@ -47,7 +45,6 @@ export function aggregateDeals(segments: Segment[]): DealAgg[] {
   return [...byDeal.values()].filter((d) => [...d.byMonth.values()].some((v) => v > 0));
 }
 
-/** Sum a deal's monthly revenue into the given periods (quarters or months). */
 function dealByPeriod(d: DealAgg, periods: string[], periodOf: (m: string) => string): Map<string, number> {
   const out = new Map<string, number>(periods.map((p) => [p, 0]));
   for (const [month, amt] of d.byMonth) {
@@ -59,35 +56,31 @@ function dealByPeriod(d: DealAgg, periods: string[], periodOf: (m: string) => st
 
 const HYPERLINK = (url: string, label: string) => (url ? `=HYPERLINK("${url}",${JSON.stringify(label)})` : label);
 
+const BLUE = { red: 0.8117647, green: 0.8862745, blue: 0.9529412 };
 const GREEN = { red: 0.85, green: 0.92, blue: 0.83 };
 const GRAY = { red: 0.94, green: 0.94, blue: 0.94 };
 const BLACK = { red: 0, green: 0, blue: 0 };
 const WHITE = { red: 1, green: 1, blue: 1 };
+const GREY_TEXT = { red: 0.6, green: 0.6, blue: 0.6 };
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
-/** Background only (keeps the baseline text: size 10, not bold). */
-function setBg(sheetId: number, row: number, cols: number, bg: unknown) {
+/** Per-probability header colors for the By Stage views. Fill in from the user's palette. */
+const STAGE_COLORS: Record<number, unknown> = {
+  // e.g. 100: {red,green,blue}, 80: {...}, ... (percent → color). Missing → GREEN.
+};
+
+type ColoredRow = { row: number; bg: unknown };
+
+function setBg(sheetId: number, row: number, cols: number, bg: unknown, fg?: unknown) {
   return {
     repeatCell: {
       range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 0, endColumnIndex: cols },
-      cell: { userEnteredFormat: { backgroundColor: bg } },
-      fields: "userEnteredFormat.backgroundColor",
+      cell: { userEnteredFormat: { backgroundColor: bg, ...(fg ? { textFormat: { bold: false, fontSize: 10, foregroundColor: fg } } : {}) } },
+      fields: fg ? "userEnteredFormat(backgroundColor,textFormat)" : "userEnteredFormat.backgroundColor",
     },
   };
 }
 
-/** Background + white text (for the black partner rows); size 10, not bold. */
-function setBgWhite(sheetId: number, row: number, cols: number, bg: unknown) {
-  return {
-    repeatCell: {
-      range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 0, endColumnIndex: cols },
-      cell: { userEnteredFormat: { backgroundColor: bg, textFormat: { bold: false, fontSize: 10, foregroundColor: WHITE } } },
-      fields: "userEnteredFormat(backgroundColor,textFormat)",
-    },
-  };
-}
-
-/** Shared: write a grid (USER_ENTERED) + reset stale format/groups + apply outline formatting. */
 async function writeOutline(
   token: string,
   spreadsheetId: string,
@@ -99,13 +92,16 @@ async function writeOutline(
     firstPeriodCol: number;
     percentCol?: number;
     blackRows: number[];
-    greenRows: number[];
+    coloredRows: ColoredRow[];
     groups: { start: number; end: number }[];
   },
 ): Promise<void> {
   await ensureTab(token, spreadsheetId, tab);
   await clearValues(token, spreadsheetId, tab);
-  await writeValues(token, spreadsheetId, `${tab}!A1`, grid, "USER_ENTERED");
+  // Header row RAW (so "2026-09" / "2026.Q1" stay literal text, not parsed to dates/numbers);
+  // data rows USER_ENTERED so the Deal =HYPERLINK renders.
+  await writeValues(token, spreadsheetId, `${tab}!A1`, [grid[0]!], "RAW");
+  if (grid.length > 1) await writeValues(token, spreadsheetId, `${tab}!A2`, grid.slice(1), "USER_ENTERED");
 
   const struct = (await getSheetStructure(token, spreadsheetId)) as {
     sheets?: { properties?: { title?: string; sheetId?: number }; rowGroups?: { range?: unknown }[] }[];
@@ -114,12 +110,8 @@ async function writeOutline(
   const sheetId = sheet.properties!.sheetId!;
 
   const reqs: unknown[] = [];
-  // 1. Clear any stale row groups (data drift shifts their ranges).
-  for (const g of sheet.rowGroups ?? []) {
-    if (g.range) reqs.push({ deleteDimensionGroup: { range: g.range } });
-  }
-  // 2. Reset the WHOLE sheet to a clean baseline: white bg, black text, size 10,
-  //    not bold, no number format. fields="userEnteredFormat" clears everything else.
+  for (const g of sheet.rowGroups ?? []) if (g.range) reqs.push({ deleteDimensionGroup: { range: g.range } });
+  // Reset the whole sheet to a clean baseline (white bg, black text, size 10, not bold, no number fmt).
   reqs.push({
     repeatCell: {
       range: { sheetId },
@@ -127,14 +119,12 @@ async function writeOutline(
       fields: "userEnteredFormat",
     },
   });
-  // 3. Frozen header + label columns.
   reqs.push({
     updateSheetProperties: {
       properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: opts.frozenCols } },
       fields: "gridProperties(frozenRowCount,frozenColumnCount)",
     },
   });
-  // 4. Number formats.
   reqs.push({
     repeatCell: {
       range: { sheetId, startRowIndex: 1, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width },
@@ -151,22 +141,22 @@ async function writeOutline(
       },
     });
   }
-  // 5. Row backgrounds (no bold anywhere).
   reqs.push(setBg(sheetId, 0, opts.width, GRAY)); // header
-  for (const r of opts.blackRows) reqs.push(setBgWhite(sheetId, r, opts.width, BLACK));
-  for (const r of opts.greenRows) reqs.push(setBg(sheetId, r, opts.width, GREEN));
-  // 6. Fresh native row groups.
-  for (const g of opts.groups) {
-    reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
-  }
+  for (const r of opts.blackRows) reqs.push(setBg(sheetId, r, opts.width, BLACK, WHITE));
+  for (const c of opts.coloredRows) reqs.push(setBg(sheetId, c.row, opts.width, c.bg));
+  // Grey text on the Contract Format column (last attribute col), data rows only.
+  reqs.push({
+    repeatCell: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: opts.firstPeriodCol - 1, endColumnIndex: opts.firstPeriodCol },
+      cell: { userEnteredFormat: { textFormat: { foregroundColor: GREY_TEXT } } },
+      fields: "userEnteredFormat.textFormat.foregroundColor",
+    },
+  });
+  for (const g of opts.groups) reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
   await batchUpdate(token, spreadsheetId, reqs);
 }
 
-/**
- * "By Client": columns Probability | Deal | Contract Format | <periods>.
- * Collapsible group per Client Partner; black partner rows, green client rows.
- * Clients alphabetical within partner; deals by probability desc then title.
- */
+/** "By Client": Probability | Deal | Contract Format | <periods>. Groups: Client Partner → Client. */
 export async function renderPartnerClientView(
   token: string,
   spreadsheetId: string,
@@ -212,16 +202,12 @@ export async function renderPartnerClientView(
     firstPeriodCol: ATTR.length,
     percentCol: 0,
     blackRows: partnerRows,
-    greenRows: clientRows,
+    coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })),
     groups,
   });
 }
 
-/**
- * "By Stage": columns Client Partner | Client | Deal | Contract Format | <periods>.
- * Collapsible group per probability % (desc). Deals within sorted by Client
- * Partner then Deal title. Group header shows "NN% | <stage(s)>".
- */
+/** "By Stage": Client Partner | Client | Deal | Contract Format | <periods>. Groups: probability % (desc). */
 export async function renderProbabilityView(
   token: string,
   spreadsheetId: string,
@@ -233,7 +219,7 @@ export async function renderProbabilityView(
   const ATTR = ["Client Partner", "Client", "Deal", "Contract Format"];
   const width = ATTR.length + periods.length;
   const grid: (string | number)[][] = [[...ATTR, ...periods]];
-  const greenRows: number[] = [];
+  const coloredRows: ColoredRow[] = [];
   const groups: { start: number; end: number }[] = [];
 
   const byProb = new Map<number, DealAgg[]>();
@@ -242,12 +228,12 @@ export async function renderProbabilityView(
     byProb.get(d.probability)!.push(d);
   }
   for (const prob of [...byProb.keys()].sort((a, b) => b - a)) {
-    const list = byProb.get(prob)!.sort((x, y) => x.clientPartner.localeCompare(y.clientPartner) || x.dealTitle.localeCompare(y.dealTitle));
-    const stages = [...new Set(list.map((d) => d.stage).filter(Boolean))].join(" / ");
-    grid.push([`${Math.round(prob * 100)}%${stages ? ` | ${stages}` : ""}`, ...Array(width - 1).fill("")]);
-    greenRows.push(grid.length - 1);
+    const pct = Math.round(prob * 100);
+    // Leading apostrophe forces text so "100%" isn't parsed to the number 1.
+    grid.push([`'${pct}%`, ...Array(width - 1).fill("")]);
+    coloredRows.push({ row: grid.length - 1, bg: STAGE_COLORS[pct] ?? GREEN });
     const contentStart = grid.length;
-    for (const d of list) {
+    for (const d of byProb.get(prob)!.sort((x, y) => x.clientPartner.localeCompare(y.clientPartner) || x.dealTitle.localeCompare(y.dealTitle))) {
       const bp = dealByPeriod(d, periods, periodOf);
       grid.push([d.clientPartner, d.client, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
     }
@@ -258,7 +244,7 @@ export async function renderProbabilityView(
     frozenCols: 4,
     firstPeriodCol: ATTR.length,
     blackRows: [],
-    greenRows,
+    coloredRows,
     groups,
   });
 }
