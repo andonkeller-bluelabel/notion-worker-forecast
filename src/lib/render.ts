@@ -6,7 +6,7 @@
  * period columns (quarters or months). Cells show RAW (unweighted) revenue.
  */
 
-import { batchUpdate, getSheetMeta, writeValues, ensureTab, clearValues } from "./sheets.js";
+import { batchUpdate, getSheetStructure, writeValues, ensureTab, clearValues } from "./sheets.js";
 import { spreadSegment, type Segment } from "./forecast.js";
 
 export type DealAgg = {
@@ -65,17 +65,29 @@ const BLACK = { red: 0, green: 0, blue: 0 };
 const WHITE = { red: 1, green: 1, blue: 1 };
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
-function bgBold(sheetId: number, row: number, cols: number, bg: unknown, fg?: unknown) {
+/** Background only (keeps the baseline text: size 10, not bold). */
+function setBg(sheetId: number, row: number, cols: number, bg: unknown) {
   return {
     repeatCell: {
       range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 0, endColumnIndex: cols },
-      cell: { userEnteredFormat: { backgroundColor: bg, textFormat: { bold: true, ...(fg ? { foregroundColor: fg } : {}) } } },
+      cell: { userEnteredFormat: { backgroundColor: bg } },
+      fields: "userEnteredFormat.backgroundColor",
+    },
+  };
+}
+
+/** Background + white text (for the black partner rows); size 10, not bold. */
+function setBgWhite(sheetId: number, row: number, cols: number, bg: unknown) {
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 0, endColumnIndex: cols },
+      cell: { userEnteredFormat: { backgroundColor: bg, textFormat: { bold: false, fontSize: 10, foregroundColor: WHITE } } },
       fields: "userEnteredFormat(backgroundColor,textFormat)",
     },
   };
 }
 
-/** Shared: write a grid (USER_ENTERED) + apply outline formatting + native row groups. */
+/** Shared: write a grid (USER_ENTERED) + reset stale format/groups + apply outline formatting. */
 async function writeOutline(
   token: string,
   spreadsheetId: string,
@@ -95,23 +107,41 @@ async function writeOutline(
   await clearValues(token, spreadsheetId, tab);
   await writeValues(token, spreadsheetId, `${tab}!A1`, grid, "USER_ENTERED");
 
-  const sheetId = (await getSheetMeta(token, spreadsheetId)).find((m) => m.title === tab)!.sheetId;
-  const reqs: unknown[] = [
-    {
-      updateSheetProperties: {
-        properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: opts.frozenCols } },
-        fields: "gridProperties(frozenRowCount,frozenColumnCount)",
-      },
+  const struct = (await getSheetStructure(token, spreadsheetId)) as {
+    sheets?: { properties?: { title?: string; sheetId?: number }; rowGroups?: { range?: unknown }[] }[];
+  };
+  const sheet = (struct.sheets ?? []).find((s) => s.properties?.title === tab)!;
+  const sheetId = sheet.properties!.sheetId!;
+
+  const reqs: unknown[] = [];
+  // 1. Clear any stale row groups (data drift shifts their ranges).
+  for (const g of sheet.rowGroups ?? []) {
+    if (g.range) reqs.push({ deleteDimensionGroup: { range: g.range } });
+  }
+  // 2. Reset the WHOLE sheet to a clean baseline: white bg, black text, size 10,
+  //    not bold, no number format. fields="userEnteredFormat" clears everything else.
+  reqs.push({
+    repeatCell: {
+      range: { sheetId },
+      cell: { userEnteredFormat: { backgroundColor: WHITE, textFormat: { bold: false, fontSize: 10, foregroundColor: BLACK } } },
+      fields: "userEnteredFormat",
     },
-    bgBold(sheetId, 0, opts.width, GRAY),
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 1, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width },
-        cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: ACCOUNTING } } },
-        fields: "userEnteredFormat.numberFormat",
-      },
+  });
+  // 3. Frozen header + label columns.
+  reqs.push({
+    updateSheetProperties: {
+      properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: opts.frozenCols } },
+      fields: "gridProperties(frozenRowCount,frozenColumnCount)",
     },
-  ];
+  });
+  // 4. Number formats.
+  reqs.push({
+    repeatCell: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width },
+      cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: ACCOUNTING } } },
+      fields: "userEnteredFormat.numberFormat",
+    },
+  });
   if (opts.percentCol != null) {
     reqs.push({
       repeatCell: {
@@ -121,8 +151,11 @@ async function writeOutline(
       },
     });
   }
-  for (const r of opts.blackRows) reqs.push(bgBold(sheetId, r, opts.width, BLACK, WHITE));
-  for (const r of opts.greenRows) reqs.push(bgBold(sheetId, r, opts.width, GREEN));
+  // 5. Row backgrounds (no bold anywhere).
+  reqs.push(setBg(sheetId, 0, opts.width, GRAY)); // header
+  for (const r of opts.blackRows) reqs.push(setBgWhite(sheetId, r, opts.width, BLACK));
+  for (const r of opts.greenRows) reqs.push(setBg(sheetId, r, opts.width, GREEN));
+  // 6. Fresh native row groups.
   for (const g of opts.groups) {
     reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
   }
