@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets — pulled OAuth token / client credentials. NEVER commit.
+.env
+.env.local
+
+# Logs / misc
+*.log
+.DS_Store
