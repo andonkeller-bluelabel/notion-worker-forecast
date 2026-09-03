@@ -1,15 +1,13 @@
 /**
- * Renders the Current2-style formatted views: deal-level rows grouped by stage
- * (or client), with a Probability column and one column per quarter/month, plus
- * a subtotal per group and a grand total. Cells show RAW (unweighted) revenue.
- *
- * Values are written USER_ENTERED (so the Deal cell can be a =HYPERLINK), then
- * formatting is applied via batchUpdate (frozen header/labels, currency/percent
- * number formats, bold headers, green group rows).
+ * Current2-style outline views written into the Forecast sheet:
+ *   • By Client   — group by Client Partner → Client, deals beneath.
+ *   • By Stage    — group by probability %, deals sorted by Client Partner then title.
+ * Both: collapsible native row groups, a Deal hyperlink, accounting `$ -` zeros,
+ * period columns (quarters or months). Cells show RAW (unweighted) revenue.
  */
 
 import { batchUpdate, getSheetMeta, writeValues, ensureTab, clearValues } from "./sheets.js";
-import { spreadSegment, monthToQuarter, type Segment } from "./forecast.js";
+import { spreadSegment, type Segment } from "./forecast.js";
 
 export type DealAgg = {
   dealId: string;
@@ -44,11 +42,8 @@ export function aggregateDeals(segments: Segment[]): DealAgg[] {
       };
       byDeal.set(key, d);
     }
-    for (const c of spreadSegment(s)) {
-      d.byMonth.set(c.month, (d.byMonth.get(c.month) ?? 0) + c.amount);
-    }
+    for (const c of spreadSegment(s)) d.byMonth.set(c.month, (d.byMonth.get(c.month) ?? 0) + c.amount);
   }
-  // Drop deals with no revenue in-range.
   return [...byDeal.values()].filter((d) => [...d.byMonth.values()].some((v) => v > 0));
 }
 
@@ -62,168 +57,175 @@ function dealByPeriod(d: DealAgg, periods: string[], periodOf: (m: string) => st
   return out;
 }
 
-const HYPERLINK = (url: string, label: string) =>
-  url ? `=HYPERLINK("${url}",${JSON.stringify(label)})` : label;
+const HYPERLINK = (url: string, label: string) => (url ? `=HYPERLINK("${url}",${JSON.stringify(label)})` : label);
 
-export type GroupBy = "stage" | "client";
-
-type ViewMeta = {
-  headerRow: number;
-  groupHeaderRows: number[];
-  totalRows: number[]; // subtotals + grand total (bold)
-  firstPeriodCol: number; // 0-based
-  periodCount: number;
-  rowCount: number;
-};
-
-/**
- * Build the 2D grid + formatting metadata for one view.
- * Columns: Probability | Client Partner | Client | Deal | Contract Format | <periods…>
- */
-export function buildViewGrid(
-  deals: DealAgg[],
-  periods: string[],
-  groupBy: GroupBy,
-  periodOf: (m: string) => string,
-): { grid: (string | number)[][]; meta: ViewMeta } {
-  const ATTR = ["Probability", "Client Partner", "Client", "Deal", "Contract Format"];
-  const firstPeriodCol = ATTR.length;
-  const grid: (string | number)[][] = [[...ATTR, ...periods]];
-  const groupHeaderRows: number[] = [];
-  const totalRows: number[] = [];
-
-  // Group + order.
-  const groups = new Map<string, DealAgg[]>();
-  for (const d of deals) {
-    const key = groupBy === "stage" ? d.stage || "(no stage)" : d.client || "(no client)";
-    (groups.get(key) ?? groups.set(key, []).get(key)!).push(d);
-  }
-  const groupProb = (list: DealAgg[]) => Math.max(...list.map((d) => d.probability), 0);
-  const orderedGroups = [...groups.entries()].sort((a, b) =>
-    groupBy === "stage"
-      ? groupProb(b[1]) - groupProb(a[1]) || a[0].localeCompare(b[0]) // stages: high prob first
-      : a[0].localeCompare(b[0]),
-  );
-
-  const zeros = () => periods.map(() => 0);
-  const grand = zeros();
-
-  for (const [groupKey, list] of orderedGroups) {
-    // Deals within a group.
-    list.sort((a, b) =>
-      groupBy === "client"
-        ? b.probability - a.probability || a.dealTitle.localeCompare(b.dealTitle) // client view: deals by stage order
-        : a.client.localeCompare(b.client) || a.dealTitle.localeCompare(b.dealTitle),
-    );
-    // Group header row.
-    const gp = groupProb(list);
-    const label = groupBy === "stage" ? `${Math.round(gp * 100)}% | ${groupKey}` : groupKey;
-    grid.push([label, "", "", "", "", ...zeros().map(() => "")]);
-    groupHeaderRows.push(grid.length - 1);
-
-    const subtotal = zeros();
-    for (const d of list) {
-      const bp = dealByPeriod(d, periods, periodOf);
-      const cells = periods.map((p, i) => {
-        const v = bp.get(p) ?? 0;
-        subtotal[i]! += v;
-        grand[i]! += v;
-        return Math.round(v);
-      });
-      grid.push([d.probability, d.clientPartner, d.client, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...cells]);
-    }
-    // Subtotal row.
-    grid.push(["", "", "", `Subtotal — ${groupKey}`, "", ...subtotal.map((v) => Math.round(v))]);
-    totalRows.push(grid.length - 1);
-  }
-  // Grand total.
-  grid.push(["", "", "", "Grand Total", "", ...grand.map((v) => Math.round(v))]);
-  totalRows.push(grid.length - 1);
-
-  return {
-    grid,
-    meta: {
-      headerRow: 0,
-      groupHeaderRows,
-      totalRows,
-      firstPeriodCol,
-      periodCount: periods.length,
-      rowCount: grid.length,
-    },
-  };
-}
-
-// ---- formatting helpers (batchUpdate requests) ----
 const GREEN = { red: 0.85, green: 0.92, blue: 0.83 };
 const GRAY = { red: 0.94, green: 0.94, blue: 0.94 };
+const BLACK = { red: 0, green: 0, blue: 0 };
+const WHITE = { red: 1, green: 1, blue: 1 };
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
-function rowFormat(sheetId: number, row: number, cols: number, bg: unknown, bold: boolean) {
+function bgBold(sheetId: number, row: number, cols: number, bg: unknown, fg?: unknown) {
   return {
     repeatCell: {
       range: { sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 0, endColumnIndex: cols },
-      cell: { userEnteredFormat: { backgroundColor: bg, textFormat: { bold } } },
+      cell: { userEnteredFormat: { backgroundColor: bg, textFormat: { bold: true, ...(fg ? { foregroundColor: fg } : {}) } } },
       fields: "userEnteredFormat(backgroundColor,textFormat)",
     },
   };
 }
 
-/** Write one view into a tab: values + formatting. Idempotent (clears the tab first). */
-export async function renderView(
+/** Shared: write a grid (USER_ENTERED) + apply outline formatting + native row groups. */
+async function writeOutline(
   token: string,
   spreadsheetId: string,
   tab: string,
-  deals: DealAgg[],
-  periods: string[],
-  groupBy: GroupBy,
-  periodOf: (m: string) => string,
+  grid: (string | number)[][],
+  opts: {
+    width: number;
+    frozenCols: number;
+    firstPeriodCol: number;
+    percentCol?: number;
+    blackRows: number[];
+    greenRows: number[];
+    groups: { start: number; end: number }[];
+  },
 ): Promise<void> {
-  const { grid, meta } = buildViewGrid(deals, periods, groupBy, periodOf);
   await ensureTab(token, spreadsheetId, tab);
   await clearValues(token, spreadsheetId, tab);
-  // USER_ENTERED so =HYPERLINK renders; writeValues uses RAW, so use a dedicated call.
-  await writeValuesUserEntered(token, spreadsheetId, `${tab}!A1`, grid);
+  await writeValues(token, spreadsheetId, `${tab}!A1`, grid, "USER_ENTERED");
 
   const sheetId = (await getSheetMeta(token, spreadsheetId)).find((m) => m.title === tab)!.sheetId;
-  const totalCols = meta.firstPeriodCol + meta.periodCount;
   const reqs: unknown[] = [
-    // Freeze header row + the 5 label columns.
     {
       updateSheetProperties: {
-        properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: meta.firstPeriodCol } },
+        properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: opts.frozenCols } },
         fields: "gridProperties(frozenRowCount,frozenColumnCount)",
       },
     },
-    // Header row.
-    rowFormat(sheetId, meta.headerRow, totalCols, GRAY, true),
-    // Probability column → percent.
+    bgBold(sheetId, 0, opts.width, GRAY),
     {
       repeatCell: {
-        range: { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 },
-        cell: { userEnteredFormat: { numberFormat: { type: "PERCENT", pattern: "0%" } } },
-        fields: "userEnteredFormat.numberFormat",
-      },
-    },
-    // Period columns → accounting currency.
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 1, startColumnIndex: meta.firstPeriodCol, endColumnIndex: totalCols },
+        range: { sheetId, startRowIndex: 1, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width },
         cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: ACCOUNTING } } },
         fields: "userEnteredFormat.numberFormat",
       },
     },
   ];
-  for (const r of meta.groupHeaderRows) reqs.push(rowFormat(sheetId, r, totalCols, GREEN, true));
-  for (const r of meta.totalRows) reqs.push(rowFormat(sheetId, r, totalCols, GRAY, true));
+  if (opts.percentCol != null) {
+    reqs.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: 1, startColumnIndex: opts.percentCol, endColumnIndex: opts.percentCol + 1 },
+        cell: { userEnteredFormat: { numberFormat: { type: "PERCENT", pattern: "0%" } } },
+        fields: "userEnteredFormat.numberFormat",
+      },
+    });
+  }
+  for (const r of opts.blackRows) reqs.push(bgBold(sheetId, r, opts.width, BLACK, WHITE));
+  for (const r of opts.greenRows) reqs.push(bgBold(sheetId, r, opts.width, GREEN));
+  for (const g of opts.groups) {
+    reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
+  }
   await batchUpdate(token, spreadsheetId, reqs);
 }
 
-/** values.update with USER_ENTERED (mirrors sheets.writeValues but interprets formulas). */
-async function writeValuesUserEntered(
+/**
+ * "By Client": columns Probability | Deal | Contract Format | <periods>.
+ * Collapsible group per Client Partner; black partner rows, green client rows.
+ * Clients alphabetical within partner; deals by probability desc then title.
+ */
+export async function renderPartnerClientView(
   token: string,
   spreadsheetId: string,
-  a1Anchor: string,
-  values: (string | number)[][],
+  tab: string,
+  deals: DealAgg[],
+  periods: string[],
+  periodOf: (m: string) => string,
 ): Promise<void> {
-  await writeValues(token, spreadsheetId, a1Anchor, values, "USER_ENTERED");
+  const ATTR = ["Probability", "Deal", "Contract Format"];
+  const width = ATTR.length + periods.length;
+  const blanks = () => Array(width - 1).fill("");
+  const grid: (string | number)[][] = [[...ATTR, ...periods]];
+  const partnerRows: number[] = [];
+  const clientRows: number[] = [];
+  const groups: { start: number; end: number }[] = [];
+
+  const byPartner = new Map<string, Map<string, DealAgg[]>>();
+  for (const d of deals) {
+    const p = d.clientPartner || "(no partner)";
+    const c = d.client || "(no client)";
+    if (!byPartner.has(p)) byPartner.set(p, new Map());
+    const cm = byPartner.get(p)!;
+    if (!cm.has(c)) cm.set(c, []);
+    cm.get(c)!.push(d);
+  }
+  for (const p of [...byPartner.keys()].sort((a, b) => a.localeCompare(b))) {
+    grid.push([p, ...blanks()]);
+    partnerRows.push(grid.length - 1);
+    const contentStart = grid.length;
+    for (const c of [...byPartner.get(p)!.keys()].sort((a, b) => a.localeCompare(b))) {
+      grid.push([c, ...blanks()]);
+      clientRows.push(grid.length - 1);
+      for (const d of byPartner.get(p)!.get(c)!.sort((x, y) => y.probability - x.probability || x.dealTitle.localeCompare(y.dealTitle))) {
+        const bp = dealByPeriod(d, periods, periodOf);
+        grid.push([d.probability, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
+      }
+    }
+    if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
+  }
+  await writeOutline(token, spreadsheetId, tab, grid, {
+    width,
+    frozenCols: 3,
+    firstPeriodCol: ATTR.length,
+    percentCol: 0,
+    blackRows: partnerRows,
+    greenRows: clientRows,
+    groups,
+  });
+}
+
+/**
+ * "By Stage": columns Client Partner | Client | Deal | Contract Format | <periods>.
+ * Collapsible group per probability % (desc). Deals within sorted by Client
+ * Partner then Deal title. Group header shows "NN% | <stage(s)>".
+ */
+export async function renderProbabilityView(
+  token: string,
+  spreadsheetId: string,
+  tab: string,
+  deals: DealAgg[],
+  periods: string[],
+  periodOf: (m: string) => string,
+): Promise<void> {
+  const ATTR = ["Client Partner", "Client", "Deal", "Contract Format"];
+  const width = ATTR.length + periods.length;
+  const grid: (string | number)[][] = [[...ATTR, ...periods]];
+  const greenRows: number[] = [];
+  const groups: { start: number; end: number }[] = [];
+
+  const byProb = new Map<number, DealAgg[]>();
+  for (const d of deals) {
+    if (!byProb.has(d.probability)) byProb.set(d.probability, []);
+    byProb.get(d.probability)!.push(d);
+  }
+  for (const prob of [...byProb.keys()].sort((a, b) => b - a)) {
+    const list = byProb.get(prob)!.sort((x, y) => x.clientPartner.localeCompare(y.clientPartner) || x.dealTitle.localeCompare(y.dealTitle));
+    const stages = [...new Set(list.map((d) => d.stage).filter(Boolean))].join(" / ");
+    grid.push([`${Math.round(prob * 100)}%${stages ? ` | ${stages}` : ""}`, ...Array(width - 1).fill("")]);
+    greenRows.push(grid.length - 1);
+    const contentStart = grid.length;
+    for (const d of list) {
+      const bp = dealByPeriod(d, periods, periodOf);
+      grid.push([d.clientPartner, d.client, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
+    }
+    if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
+  }
+  await writeOutline(token, spreadsheetId, tab, grid, {
+    width,
+    frozenCols: 4,
+    firstPeriodCol: ATTR.length,
+    blackRows: [],
+    greenRows,
+    groups,
+  });
 }

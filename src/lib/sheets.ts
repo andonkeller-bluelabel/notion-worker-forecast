@@ -104,6 +104,23 @@ export async function getSheetMeta(token: string, spreadsheetId: string): Promis
   return out;
 }
 
+/** Read a range's FORMATTED values (what the cells display). */
+export async function getValues(token: string, spreadsheetId: string, a1Range: string): Promise<string[][]> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `/values/${encodeURIComponent(a1Range)}?valueRenderOption=FORMATTED_VALUE`;
+  const json = await sheetsRequestJson<{ values?: string[][] }>(token, url, "values.get");
+  return json.values ?? [];
+}
+
+/** Get a tab's structural facts: gridProperties (frozen/size), rowGroups, merges. */
+export async function getSheetStructure(token: string, spreadsheetId: string): Promise<unknown> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `?fields=${encodeURIComponent("sheets(properties(sheetId,title,gridProperties),rowGroups,merges)")}`;
+  return sheetsRequestJson(token, url, "spreadsheets.get.structure");
+}
+
 /** Run a spreadsheets.batchUpdate with arbitrary requests; returns the raw reply. */
 export async function batchUpdate(
   token: string,
@@ -123,6 +140,18 @@ export async function ensureTab(token: string, spreadsheetId: string, title: str
     method: "POST",
     body: { requests: [{ addSheet: { properties: { title } } }] },
   });
+}
+
+/** Delete any of the named tabs that exist (best-effort cleanup). */
+export async function deleteTabs(token: string, spreadsheetId: string, titles: string[]): Promise<void> {
+  const meta = await getSheetMeta(token, spreadsheetId);
+  const ids = meta.filter((m) => titles.includes(m.title)).map((m) => m.sheetId);
+  if (ids.length === 0) return;
+  await batchUpdate(
+    token,
+    spreadsheetId,
+    ids.map((sheetId) => ({ deleteSheet: { sheetId } })),
+  );
 }
 
 /** Clear all values in an A1 range (e.g. a whole tab: "Forecast Facts"). */

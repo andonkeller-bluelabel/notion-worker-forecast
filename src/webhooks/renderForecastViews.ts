@@ -1,23 +1,26 @@
 /**
- * renderForecastViews webhook — writes the three Current2-style formatted views:
- *   • "By Stage — Quarterly"  (2026.Q1 … 2028.Q4)
- *   • "By Stage — Monthly"    (this month + 12)
- *   • "By Client — Quarterly"
- * Deal-level rows grouped by stage/client, Probability column, raw revenue per
- * period, per-group subtotals + grand total. Payload ignored (full rebuild).
+ * renderForecastViews webhook — writes the four Current2-style outline views:
+ *   • By Client — Quarterly / Monthly   (group: Client Partner → Client)
+ *   • By Stage  — Quarterly / Monthly   (group: probability %, deals by partner+title)
+ * Collapsible native row groups, deal hyperlinks, accounting `$ -`, raw revenue.
+ * Also removes the superseded raw-pivot / (AI) preview tabs. Payload ignored.
  */
 
 import { worker, googleAuth } from "../worker.js";
 import { readSegments } from "../lib/notionForecast.js";
-import { aggregateDeals, renderView } from "../lib/render.js";
+import { aggregateDeals, renderPartnerClientView, renderProbabilityView } from "../lib/render.js";
 import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
+import { deleteTabs } from "../lib/sheets.js";
 import { postForecastOps } from "../lib/slack.js";
+
+/** Tabs from earlier iterations that these views replace. */
+const OBSOLETE_TABS = ["By Client — Quarterly (AI)", "By Stage", "By Client Account", "By Delivery Phase", "Company Total"];
 
 worker.webhook("renderForecastViews", {
   title: "Render Forecast Views",
   description:
-    "Writes the three Current2-style formatted views (By Stage — Quarterly, By Stage — Monthly, By Client — " +
-    "Quarterly): deal rows grouped by stage/client with a Probability column, raw revenue per period, subtotals + grand total.",
+    "Writes the four outline views — By Client (Quarterly + Monthly) and By Stage (Quarterly + Monthly) — into the " +
+    "Forecast Dashboard sheet. Deal-level rows, collapsible groups, raw revenue per period. Errors → #forecast-ops.",
   execute: async (events, { notion }) => {
     for (const _event of events) {
       const sheetId = process.env.FORECAST_SHEET_ID;
@@ -30,11 +33,13 @@ worker.webhook("renderForecastViews", {
         const months = monthsFrom(13); // this month + 12
         const identity = (m: string) => m;
 
-        await renderView(token, sheetId, "By Stage — Quarterly", deals, quarters, "stage", monthToQuarter);
-        await renderView(token, sheetId, "By Stage — Monthly", deals, months, "stage", identity);
-        await renderView(token, sheetId, "By Client — Quarterly", deals, quarters, "client", monthToQuarter);
+        await renderPartnerClientView(token, sheetId, "By Client — Quarterly", deals, quarters, monthToQuarter);
+        await renderPartnerClientView(token, sheetId, "By Client — Monthly", deals, months, identity);
+        await renderProbabilityView(token, sheetId, "By Stage — Quarterly", deals, quarters, monthToQuarter);
+        await renderProbabilityView(token, sheetId, "By Stage — Monthly", deals, months, identity);
+        await deleteTabs(token, sheetId, OBSOLETE_TABS);
 
-        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Stage (Q + M) and By Client (Q).`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Client (Q+M), By Stage (Q+M).`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {
