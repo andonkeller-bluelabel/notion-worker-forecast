@@ -38,15 +38,15 @@ worker.webhook("renderNotionFunnel", {
         const segments = await readSegments(notion);
         const deals = aggregateDeals(segments);
         const targets = await readTargets(notion);
-        const asOf = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/New_York" });
+        const now = new Date();
+        const asOf = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/New_York" });
+        const curQuarter = monthToQuarter(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`);
 
         // (B) Forecast vs Plan — all target quarters.
         const planRows = computePlanRows(segments, targets);
-        const htmlB = renderPlanHtml(planRows, { asOf });
+        const htmlB = renderPlanHtml(planRows, { asOf, nowQuarter: curQuarter });
 
         // (A) Pipeline vs Target — coverage windows from the current quarter forward.
-        const now = new Date();
-        const curQuarter = monthToQuarter(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`);
         const full = [...targets.keys()].sort().filter((q) => q >= curQuarter);
         if (full.length === 0) throw new Error("no current/future quarters in Revenue Targets DB");
         const near = full.slice(0, 2);
