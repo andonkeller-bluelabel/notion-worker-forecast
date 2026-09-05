@@ -64,3 +64,33 @@ export async function replaceFunnelEmbed(token: string, pageId: string, anchorId
   const newId = ((await res.json()) as { results?: { id?: string }[] }).results?.[0]?.id ?? "";
   return { blockId: newId, deletedOld, usedAnchor: ai >= 0 };
 }
+
+export type MultiReplaceResult = { blockIds: string[]; deletedOld: number; usedAnchor: boolean };
+
+/**
+ * Replace ALL report embeds after `anchorId` with fresh file-backed embeds, in order.
+ * Deletes every embed positioned after the anchor, then appends the given uploads at the
+ * page end (as the trailing blocks, they keep their order right after the anchor). Lets
+ * several reports (each its own uploaded HTML) share one managed region idempotently.
+ */
+export async function replaceReportEmbeds(token: string, pageId: string, anchorId: string, fileUploadIds: string[]): Promise<MultiReplaceResult> {
+  const list = await fetch(`${NOTION}/blocks/${pageId}/children?page_size=100`, { headers: headers(token, false) });
+  if (!list.ok) throw new Error(`list children ${list.status}: ${await list.text()}`);
+  const blocks = ((await list.json()) as { results?: { id: string; type: string }[] }).results ?? [];
+
+  const ai = blocks.findIndex((b) => b.id === anchorId);
+  let deletedOld = 0;
+  if (ai >= 0) {
+    for (const b of blocks.slice(ai + 1)) {
+      if (b.type !== "embed") continue;
+      const del = await fetch(`${NOTION}/blocks/${b.id}`, { method: "DELETE", headers: headers(token, false) });
+      if (del.ok) deletedOld += 1;
+    }
+  }
+
+  const children = fileUploadIds.map((id) => ({ type: "embed", embed: { type: "file_upload", file_upload: { id } } }));
+  const res = await fetch(`${NOTION}/blocks/${pageId}/children`, { method: "PATCH", headers: headers(token), body: JSON.stringify({ children }) });
+  if (!res.ok) throw new Error(`insert embeds ${res.status}: ${await res.text()}`);
+  const blockIds = ((await res.json()) as { results?: { id?: string }[] }).results?.map((r) => r.id ?? "") ?? [];
+  return { blockIds, deletedOld, usedAnchor: ai >= 0 };
+}
