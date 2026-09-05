@@ -18,6 +18,7 @@ export type DealAgg = {
   contractType: string;
   probability: number; // 0..1
   byMonth: Map<string, number>; // raw $ per "YYYY-MM"
+  byMonthW: Map<string, number>; // probability-weighted $ per "YYYY-MM"
 };
 
 /** Group segments into deal-level aggregates with raw monthly revenue. */
@@ -37,17 +38,27 @@ export function aggregateDeals(segments: Segment[]): DealAgg[] {
         contractType: s.contractType,
         probability: s.stageProbability,
         byMonth: new Map(),
+        byMonthW: new Map(),
       };
       byDeal.set(key, d);
     }
-    for (const c of spreadSegment(s)) d.byMonth.set(c.month, (d.byMonth.get(c.month) ?? 0) + c.amount);
+    for (const c of spreadSegment(s)) {
+      d.byMonth.set(c.month, (d.byMonth.get(c.month) ?? 0) + c.amount);
+      d.byMonthW.set(c.month, (d.byMonthW.get(c.month) ?? 0) + c.weighted);
+    }
   }
   return [...byDeal.values()].filter((d) => [...d.byMonth.values()].some((v) => v > 0));
 }
 
-function dealByPeriod(d: DealAgg, periods: string[], periodOf: (m: string) => string): Map<string, number> {
+function dealByPeriod(
+  d: DealAgg,
+  periods: string[],
+  periodOf: (m: string) => string,
+  weighted = false,
+): Map<string, number> {
+  const src = weighted ? d.byMonthW : d.byMonth;
   const out = new Map<string, number>(periods.map((p) => [p, 0]));
-  for (const [month, amt] of d.byMonth) {
+  for (const [month, amt] of src) {
     const p = periodOf(month);
     if (out.has(p)) out.set(p, out.get(p)! + amt);
   }
@@ -268,6 +279,59 @@ export async function renderProbabilityView(
     firstPeriodCol: ATTR.length,
     blackRows: [],
     coloredRows,
+    groups,
+  });
+}
+
+/**
+ * "Weighted Pipeline": Probability | Deal | Contract Format | <periods>.
+ * Client → Deals only (no Client Partner tier), clients alphabetical, cells show
+ * probability-WEIGHTED revenue, and a grand-total row sums each period at the bottom.
+ */
+export async function renderWeightedPipeline(
+  token: string,
+  spreadsheetId: string,
+  tab: string,
+  deals: DealAgg[],
+  periods: string[],
+  periodOf: (m: string) => string,
+): Promise<void> {
+  const ATTR = ["Probability", "Deal", "Contract Format"];
+  const width = ATTR.length + periods.length;
+  const blanks = () => Array(width - 1).fill("");
+  const grid: (string | number)[][] = [[...ATTR, ...periods]];
+  const clientRows: number[] = [];
+  const groups: { start: number; end: number }[] = [];
+  const totals = new Map<string, number>(periods.map((p) => [p, 0]));
+
+  const byClient = new Map<string, DealAgg[]>();
+  for (const d of deals) {
+    const c = d.client || "(no client)";
+    if (!byClient.has(c)) byClient.set(c, []);
+    byClient.get(c)!.push(d);
+  }
+  for (const c of [...byClient.keys()].sort((a, b) => a.localeCompare(b))) {
+    grid.push([c, ...blanks()]);
+    clientRows.push(grid.length - 1);
+    const contentStart = grid.length;
+    for (const d of byClient.get(c)!.sort((x, y) => y.probability - x.probability || x.dealTitle.localeCompare(y.dealTitle))) {
+      const bp = dealByPeriod(d, periods, periodOf, true); // weighted
+      grid.push([d.probability, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
+      for (const pp of periods) totals.set(pp, (totals.get(pp) ?? 0) + (bp.get(pp) ?? 0));
+    }
+    if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
+  }
+  // Grand-total row (black bar) at the bottom.
+  grid.push(["Total", "", "", ...periods.map((pp) => Math.round(totals.get(pp) ?? 0))]);
+  const totalRow = grid.length - 1;
+
+  await writeOutline(token, spreadsheetId, tab, grid, {
+    width,
+    frozenCols: 3,
+    firstPeriodCol: ATTR.length,
+    percentCol: 0,
+    blackRows: [totalRow],
+    coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })),
     groups,
   });
 }

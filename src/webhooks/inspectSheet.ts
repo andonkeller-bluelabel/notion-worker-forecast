@@ -24,9 +24,9 @@ worker.webhook("inspectSheet", {
     console.log(`[inspect] gridProperties=${JSON.stringify(s?.properties?.gridProperties)}`);
     console.log(`[inspect] rowGroups=${JSON.stringify(s?.rowGroups)}`);
     console.log(`[inspect] merges=${JSON.stringify(s?.merges)}`);
-    // First 4 columns of values (labels + probability/deal/contract), up to row 70.
-    const vals = await getValues(token, sheetId, `${TAB}!A1:D70`);
-    console.log(`[inspect] valuesA1D70=${JSON.stringify(vals)}`);
+    // Full grid (labels + all period columns), tall enough to include the total row.
+    const vals = await getValues(token, sheetId, `${TAB}!A1:P160`);
+    console.log(`[inspect] grid=${JSON.stringify(vals)}`);
     // Full header row across many columns to see the column order.
     const header = await getValues(token, sheetId, `${TAB}!1:1`);
     console.log(`[inspect] header=${JSON.stringify(header[0])}`);

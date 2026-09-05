@@ -1,14 +1,15 @@
 /**
- * renderForecastViews webhook — writes the four Current2-style outline views:
- *   • By Client / By Client | Monthly   (group: Client Partner → Client)
- *   • Pipeline  / Pipeline | Monthly     (group: probability %, deals by partner+title)
- * Collapsible native row groups, deal hyperlinks, accounting `$ -`, raw revenue.
+ * renderForecastViews webhook — writes the Current2-style outline views:
+ *   • By Client / By Client | Monthly            (group: Client Partner → Client; raw $)
+ *   • Pipeline  / Pipeline | Monthly              (group: probability %; raw $)
+ *   • Weighted Pipeline / … | Monthly            (group: Client only, alpha; weighted $ + total row)
+ * Collapsible native row groups, deal hyperlinks, accounting `$ -`.
  * Also removes the superseded raw-pivot / (AI) preview tabs. Payload ignored.
  */
 
 import { worker, googleAuth } from "../worker.js";
 import { readSegments } from "../lib/notionForecast.js";
-import { aggregateDeals, renderPartnerClientView, renderProbabilityView } from "../lib/render.js";
+import { aggregateDeals, renderPartnerClientView, renderProbabilityView, renderWeightedPipeline } from "../lib/render.js";
 import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
 import { deleteTabs } from "../lib/sheets.js";
 import { postForecastOps } from "../lib/slack.js";
@@ -19,8 +20,8 @@ const OBSOLETE_TABS = ["By Client — Quarterly (AI)", "By Stage", "By Client Ac
 worker.webhook("renderForecastViews", {
   title: "Render Forecast Views",
   description:
-    "Writes the four outline views — By Client (+ Monthly) and Pipeline (+ Monthly) — into the " +
-    "Forecast Dashboard sheet. Deal-level rows, collapsible groups, raw revenue per period. Errors → #forecast-ops.",
+    "Writes the outline views — By Client, Pipeline, and Weighted Pipeline (each + Monthly) — into the " +
+    "Forecast Dashboard sheet. Deal-level rows, collapsible groups, revenue per period. Errors → #forecast-ops.",
   execute: async (events, { notion }) => {
     for (const _event of events) {
       const sheetId = process.env.FORECAST_SHEET_ID;
@@ -39,9 +40,11 @@ worker.webhook("renderForecastViews", {
         await renderPartnerClientView(token, sheetId, "By Client | Monthly", deals, months, monthLabel);
         await renderProbabilityView(token, sheetId, "Pipeline", deals, quarters, monthToQuarter);
         await renderProbabilityView(token, sheetId, "Pipeline | Monthly", deals, months, monthLabel);
+        await renderWeightedPipeline(token, sheetId, "Weighted Pipeline", deals, quarters, monthToQuarter);
+        await renderWeightedPipeline(token, sheetId, "Weighted Pipeline | Monthly", deals, months, monthLabel);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
 
-        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Client (Q+M), Pipeline (Q+M).`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → By Client (Q+M), Pipeline (Q+M), Weighted Pipeline (Q+M).`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {
