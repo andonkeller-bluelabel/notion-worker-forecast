@@ -113,6 +113,15 @@ export async function getValues(token: string, spreadsheetId: string, a1Range: s
   return json.values ?? [];
 }
 
+/** Read a range's UNFORMATTED values (numbers stay numbers, strings stay strings). */
+export async function getValuesUnformatted(token: string, spreadsheetId: string, a1Range: string): Promise<(string | number)[][]> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `/values/${encodeURIComponent(a1Range)}?valueRenderOption=UNFORMATTED_VALUE`;
+  const json = await sheetsRequestJson<{ values?: (string | number)[][] }>(token, url, "values.get.unformatted");
+  return json.values ?? [];
+}
+
 /** Read [value, backgroundColor] for each cell in a single-column range. */
 export async function getRangeValueFormats(
   token: string,
