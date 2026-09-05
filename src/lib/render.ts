@@ -318,13 +318,21 @@ export async function renderProbabilityView(
     cur += byProb.get(s)!.length;
     dealPos.set(s, { start, end: cur - 1 });
   }
-  const sumPos = new Map<number, { gap: number; total: number; wt: number; wgap: number }>();
+  // 100% is consolidated to 2 rows (Gap to Target, Weighted Total=SUM); lower stages keep 4.
+  // `outGap` = the row a lower stage references as its incoming gap (100%→its Gap row; else→Weighted Gap row).
+  type SumRow = { gap: number; wt: number; total?: number; wgap?: number; outGap: number };
+  const sumPos = new Map<number, SumRow>();
   if (showSummary) {
     cur += 2; // blank + "Summary" title
-    for (const s of CASCADE_STAGES) {
-      sumPos.set(s, { gap: cur, total: cur + 1, wt: cur + 2, wgap: cur + 3 });
-      cur += 4;
-    }
+    CASCADE_STAGES.forEach((s, si) => {
+      if (si === 0) {
+        sumPos.set(s, { gap: cur, wt: cur + 1, outGap: cur });
+        cur += 2;
+      } else {
+        sumPos.set(s, { gap: cur, total: cur + 1, wt: cur + 2, wgap: cur + 3, outGap: cur + 3 });
+        cur += 4;
+      }
+    });
   }
 
   // --- Pass 2: build the grid. Calculated cells are formulas referencing the rows above. ---
@@ -364,44 +372,55 @@ export async function renderProbabilityView(
   }
   const dealEnd = grid.length;
 
-  // Summary cascade: formulas so the math is auditable in-sheet (mirrors Current2).
+  // Summary cascade: formulas so the math is auditable in-sheet (mirrors Current2; 100% consolidated to 2 rows).
   if (showSummary) {
     grid.push(blank());
     const title = blank();
     title[labelCol] = "Summary";
     grid.push(title);
     coloredRows.push({ row: grid.length - 1, bg: GRAY });
+    const sumDataStart = grid.length;
     CASCADE_STAGES.forEach((s, si) => {
-      const sr = sumPos.get(s)!;
+      const sp = sumPos.get(s)!;
       const prev = si > 0 ? sumPos.get(CASCADE_STAGES[si - 1]!)! : null;
       const dp = dealPos.get(s);
       const hasT = (i: number) => cascadeTargets!.get(periods[i]!) != null;
+      const sumCell = (i: number) => (dp ? `=SUM(${col(i)}${dp.start}:${col(i)}${dp.end})` : 0);
 
+      // Gap to Target — first row of each block, carries the stage %.
+      // 100%: its own Weighted Total − Target; lower stages: the prior block's outgoing gap.
       const gapRow = blank();
       gapRow[labelCol - 1] = `'${s}%`;
-      gapRow[labelCol] = "Gap to Target"; // incoming gap (100% = its own committed − target)
-      periods.forEach((_q, i) => (gapRow[P0 + i] = hasT(i) ? `=${col(i)}${(si === 0 ? sr : prev!).wgap}` : ""));
+      gapRow[labelCol] = "Gap to Target";
+      periods.forEach((_q, i) => {
+        const c = col(i);
+        gapRow[P0 + i] = !hasT(i) ? "" : si === 0 ? `=${c}${sp.wt}-${c}$${TARGET_ROW}` : `=${c}${prev!.outGap}`;
+      });
       grid.push(gapRow);
       coloredRows.push({ row: grid.length - 1, bg: STAGE_COLORS[s] ?? GREEN });
 
-      const totRow = blank();
-      totRow[labelCol] = "Total at Prob"; // this stage's gross
-      periods.forEach((_q, i) => (totRow[P0 + i] = dp ? `=SUM(${col(i)}${dp.start}:${col(i)}${dp.end})` : 0));
-      grid.push(totRow);
-
-      const wtRow = blank();
-      wtRow[labelCol] = "Weighted Total"; // cumulative: this stage weighted + all higher stages
-      periods.forEach((_q, i) => {
-        const c = col(i);
-        wtRow[P0 + i] = si === 0 ? `=${c}${sr.total}` : `=(${c}${sr.total}*${s / 100})+${c}${prev!.wt}`;
-      });
-      grid.push(wtRow);
-
-      const wgRow = blank();
-      wgRow[labelCol] = "Weighted Gap to Target"; // cumulative weighted − target
-      periods.forEach((_q, i) => (wgRow[P0 + i] = hasT(i) ? `=${col(i)}${sr.wt}-${col(i)}$${TARGET_ROW}` : ""));
-      grid.push(wgRow);
+      if (si === 0) {
+        // 100%: Weighted Total = committed gross (weighted == gross → no separate Total / Weighted-Gap rows).
+        const wtRow = blank();
+        wtRow[labelCol] = "Weighted Total";
+        periods.forEach((_q, i) => (wtRow[P0 + i] = sumCell(i)));
+        grid.push(wtRow);
+      } else {
+        const totRow = blank();
+        totRow[labelCol] = "Total at Prob"; // this stage's gross
+        periods.forEach((_q, i) => (totRow[P0 + i] = sumCell(i)));
+        grid.push(totRow);
+        const wtRow = blank();
+        wtRow[labelCol] = "Weighted Total"; // cumulative: this stage weighted + higher stages
+        periods.forEach((_q, i) => (wtRow[P0 + i] = `=(${col(i)}${sp.total!}*${s / 100})+${col(i)}${prev!.wt}`));
+        grid.push(wtRow);
+        const wgRow = blank();
+        wgRow[labelCol] = "Weighted Gap to Target"; // cumulative weighted − target
+        periods.forEach((_q, i) => (wgRow[P0 + i] = hasT(i) ? `=${col(i)}${sp.wt}-${col(i)}$${TARGET_ROW}` : ""));
+        grid.push(wgRow);
+      }
     });
+    groups.push({ start: sumDataStart, end: grid.length }); // collapsible summary block (rows 65–86)
   }
 
   await writeOutline(token, spreadsheetId, target, grid, {
