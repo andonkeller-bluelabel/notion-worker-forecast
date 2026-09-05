@@ -24,6 +24,8 @@ export type Segment = {
   deliveryPhase: string; // joined multi-select, e.g. "Discover, Deploy"
   billingBasis: string;
   weeklyRevenue: number;
+  /** Fixed fee for date-based (milestone/installment) items; recognized when weeklyRevenue is 0. */
+  rate: number;
   /** ISO YYYY-MM-DD, inclusive. */
   start: string | null;
   /** ISO YYYY-MM-DD, exclusive. */
@@ -70,14 +72,28 @@ function overlapDays(aStart: number, aEnd: number, bStart: number, bEnd: number)
 }
 
 /**
- * Spread one segment into month → { committed, weighted } contributions,
- * clamped to [MIN_MONTH, MAX_MONTH]. Returns [] when it can't be prorated
- * (missing/!+ve rate, missing dates, or end <= start).
+ * Spread one segment into month → { amount, committed, weighted } contributions,
+ * clamped to [MIN_MONTH, MAX_MONTH]. Returns [] when it can't be prorated.
+ *
+ * Recurring items (weeklyRevenue > 0) accrue weeklyRevenue per week across [start, end).
+ * Fixed-date items (milestones / installments / fixed fees — "Fixed Dates" billing, whose
+ * weeklyRevenue is 0) instead recognize their fixed `rate`, spread by calendar day across the
+ * item's window; a same-day or missing-end item lands wholly in its start month.
  */
 export function spreadSegment(seg: Segment): { month: string; amount: number; committed: number; weighted: number }[] {
   const start = parseISO(seg.start);
-  const end = parseISO(seg.end);
-  if (start == null || end == null || end <= start || !(seg.weeklyRevenue > 0)) return [];
+  let end = parseISO(seg.end);
+
+  const isFixed = !(seg.weeklyRevenue > 0); // no weekly rate → date-based fixed fee (use Rate)
+  const rate = Number.isFinite(seg.rate) ? seg.rate : 0;
+
+  if (start == null) return [];
+  if (isFixed) {
+    if (!(rate > 0)) return []; // nothing to recognize
+    if (end == null || end <= start) end = start + MS_PER_DAY; // point payment → 1-day window at start
+  } else if (end == null || end <= start) {
+    return []; // recurring items need a real window
+  }
 
   const prob = Number.isFinite(seg.stageProbability) ? Math.max(0, Math.min(1, seg.stageProbability)) : 0;
   const isWon = prob >= 0.999;
@@ -90,6 +106,9 @@ export function spreadSegment(seg: Segment): { month: string; amount: number; co
   const winEnd = Math.min(end, clampHi);
   if (winEnd <= winStart) return [];
 
+  // Full (unclamped) window length — a fixed rate is apportioned proportionally over it.
+  const totalDays = Math.max(1, Math.round((end - start) / MS_PER_DAY));
+
   const out: { month: string; amount: number; committed: number; weighted: number }[] = [];
   let y = new Date(winStart).getUTCFullYear();
   let mo = new Date(winStart).getUTCMonth();
@@ -100,7 +119,7 @@ export function spreadSegment(seg: Segment): { month: string; amount: number; co
     const monthEnd = Date.UTC(y, mo + 1, 1); // exclusive
     const days = overlapDays(winStart, winEnd, monthStart, monthEnd);
     if (days > 0) {
-      const amount = seg.weeklyRevenue * (days / 7); // raw (unweighted) revenue
+      const amount = isFixed ? rate * (days / totalDays) : seg.weeklyRevenue * (days / 7); // raw (unweighted) revenue
       out.push({ month: monthKey(y, mo), amount, committed: isWon ? amount : 0, weighted: amount * prob });
     }
     mo += 1;

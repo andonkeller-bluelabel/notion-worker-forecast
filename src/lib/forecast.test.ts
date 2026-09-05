@@ -15,6 +15,7 @@ const base: Omit<Segment, "start" | "end" | "weeklyRevenue" | "stageProbability"
   contractType: "Sprints | Fixed Amount",
   deliveryPhase: "Deploy",
   billingBasis: "Per Week",
+  rate: 0,
 };
 
 // Full month, won (prob 1): 700/wk × (30 days ÷ 7) = 3000.
@@ -44,10 +45,31 @@ const beyond = spreadSegment({ ...base, start: "2028-12-01", end: "2029-03-01", 
 assert.ok(beyond.every((c) => c.month <= "2028-12"), "clamped to MAX_MONTH");
 assert.ok(beyond.some((c) => c.month === "2028-12"), "includes final allowed month");
 
-// Skips: no end, zero rate, end<=start.
+// Skips: no end (recurring), zero-value (no weekly rate AND no fixed rate), end<=start (recurring).
 assert.equal(spreadSegment({ ...base, start: "2026-06-01", end: null, weeklyRevenue: 700, stageProbability: 1 }).length, 0);
 assert.equal(spreadSegment({ ...base, start: "2026-06-01", end: "2026-07-01", weeklyRevenue: 0, stageProbability: 1 }).length, 0);
 assert.equal(spreadSegment({ ...base, start: "2026-07-01", end: "2026-06-01", weeklyRevenue: 700, stageProbability: 1 }).length, 0);
+
+// Fixed-date milestone: no weekly rate, a fixed Rate, same-day → full Rate in the start month.
+const milestone = spreadSegment({ ...base, billingBasis: "Fixed Dates", weeklyRevenue: 0, rate: 37250, start: "2026-04-13", end: "2026-04-13", stageProbability: 1 });
+assert.equal(milestone.length, 1, "point milestone → one month");
+assert.equal(milestone[0]!.month, "2026-04");
+assert.equal(Math.round(milestone[0]!.committed), 37250, "won milestone recognizes full Rate");
+
+// Fixed-date item missing an end also lands as a point in its start month.
+const noEnd = spreadSegment({ ...base, billingBasis: "Fixed Dates", weeklyRevenue: 0, rate: 25250, start: "2026-06-29", end: null, stageProbability: 0.6 });
+assert.equal(noEnd.length, 1);
+assert.equal(noEnd[0]!.month, "2026-06");
+assert.equal(noEnd[0]!.committed, 0, "un-won fixed → committed 0");
+assert.equal(Math.round(noEnd[0]!.weighted), Math.round(25250 * 0.6), "weighted = Rate × prob");
+
+// Fixed-date item over a span splits proportionally and sums to the full Rate.
+const spanFixed = spreadSegment({ ...base, billingBasis: "Fixed Dates", weeklyRevenue: 0, rate: 30000, start: "2026-06-11", end: "2026-07-11", stageProbability: 1 });
+assert.deepEqual(spanFixed.map((c) => c.month), ["2026-06", "2026-07"]);
+assert.equal(Math.round(spanFixed.reduce((s, c) => s + c.amount, 0)), 30000, "fixed span sums to Rate");
+
+// Zero-rate fixed item still skips.
+assert.equal(spreadSegment({ ...base, billingBasis: "Fixed Dates", weeklyRevenue: 0, rate: 0, start: "2026-04-13", end: "2026-04-13", stageProbability: 1 }).length, 0);
 
 // computeFacts + grid shape.
 const facts = computeFacts([
