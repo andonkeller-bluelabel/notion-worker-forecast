@@ -6,7 +6,7 @@
  * period columns (quarters or months). Cells show RAW (unweighted) revenue.
  */
 
-import { batchUpdate, getSheetStructure, writeValues, ensureTab, clearValues } from "./sheets.js";
+import { batchUpdate, getSheetStructure, writeValues, clearValues } from "./sheets.js";
 import { spreadSegment, type Segment } from "./forecast.js";
 
 export type DealAgg = {
@@ -102,10 +102,13 @@ function setBg(sheetId: number, row: number, cols: number, bg: unknown, fg?: unk
   };
 }
 
+/** A render target identified by stable sheetId; title is only for the values API and follows renames. */
+export type Target = { sheetId: number; title: string };
+
 async function writeOutline(
   token: string,
   spreadsheetId: string,
-  tab: string,
+  target: Target,
   grid: (string | number)[][],
   opts: {
     width: number;
@@ -115,20 +118,21 @@ async function writeOutline(
     blackRows: number[];
     coloredRows: ColoredRow[];
     groups: { start: number; end: number }[];
+    attrWidths: number[]; // pixel width per attribute column (0..firstPeriodCol-1)
+    periodWidth: number; // pixel width for every period column
   },
 ): Promise<void> {
-  await ensureTab(token, spreadsheetId, tab);
-  await clearValues(token, spreadsheetId, tab);
+  const { sheetId, title } = target;
+  await clearValues(token, spreadsheetId, title);
   // Header row RAW (so "2026-09" / "2026.Q1" stay literal text, not parsed to dates/numbers);
   // data rows USER_ENTERED so the Deal =HYPERLINK renders.
-  await writeValues(token, spreadsheetId, `${tab}!A1`, [grid[0]!], "RAW");
-  if (grid.length > 1) await writeValues(token, spreadsheetId, `${tab}!A2`, grid.slice(1), "USER_ENTERED");
+  await writeValues(token, spreadsheetId, `${title}!A1`, [grid[0]!], "RAW");
+  if (grid.length > 1) await writeValues(token, spreadsheetId, `${title}!A2`, grid.slice(1), "USER_ENTERED");
 
   const struct = (await getSheetStructure(token, spreadsheetId)) as {
     sheets?: { properties?: { title?: string; sheetId?: number }; rowGroups?: { range?: unknown }[]; conditionalFormats?: unknown[] }[];
   };
-  const sheet = (struct.sheets ?? []).find((s) => s.properties?.title === tab)!;
-  const sheetId = sheet.properties!.sheetId!;
+  const sheet = (struct.sheets ?? []).find((s) => s.properties?.sheetId === sheetId)!;
 
   const reqs: unknown[] = [];
   for (const g of sheet.rowGroups ?? []) if (g.range) reqs.push({ deleteDimensionGroup: { range: g.range } });
@@ -177,6 +181,19 @@ async function writeOutline(
     },
   });
   for (const g of opts.groups) reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
+  // Column widths (baked from the hand-tuned tabs): attribute cols individually, period cols uniform.
+  opts.attrWidths.forEach((px, i) =>
+    reqs.push({
+      updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: "pixelSize" },
+    }),
+  );
+  reqs.push({
+    updateDimensionProperties: {
+      range: { sheetId, dimension: "COLUMNS", startIndex: opts.firstPeriodCol, endIndex: opts.width },
+      properties: { pixelSize: opts.periodWidth },
+      fields: "pixelSize",
+    },
+  });
   // Conditional format: muted grey text on $0 deal cells (blank group-row cells aren't numbers, so untouched).
   reqs.push({
     addConditionalFormatRule: {
@@ -194,10 +211,11 @@ async function writeOutline(
 export async function renderPartnerClientView(
   token: string,
   spreadsheetId: string,
-  tab: string,
+  target: Target,
   deals: DealAgg[],
   periods: string[],
   periodOf: (m: string) => string,
+  widths: { attr: number[]; period: number },
 ): Promise<void> {
   const ATTR = ["Probability", "Deal", "Contract Format"];
   const width = ATTR.length + periods.length;
@@ -230,7 +248,7 @@ export async function renderPartnerClientView(
     }
     if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
   }
-  await writeOutline(token, spreadsheetId, tab, grid, {
+  await writeOutline(token, spreadsheetId, target, grid, {
     width,
     frozenCols: 3,
     firstPeriodCol: ATTR.length,
@@ -238,6 +256,8 @@ export async function renderPartnerClientView(
     blackRows: partnerRows,
     coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })),
     groups,
+    attrWidths: widths.attr,
+    periodWidth: widths.period,
   });
 }
 
@@ -245,10 +265,11 @@ export async function renderPartnerClientView(
 export async function renderProbabilityView(
   token: string,
   spreadsheetId: string,
-  tab: string,
+  target: Target,
   deals: DealAgg[],
   periods: string[],
   periodOf: (m: string) => string,
+  widths: { attr: number[]; period: number },
 ): Promise<void> {
   const ATTR = ["Client Partner", "Client", "Deal", "Contract Format"];
   const width = ATTR.length + periods.length;
@@ -273,13 +294,15 @@ export async function renderProbabilityView(
     }
     if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
   }
-  await writeOutline(token, spreadsheetId, tab, grid, {
+  await writeOutline(token, spreadsheetId, target, grid, {
     width,
     frozenCols: 4,
     firstPeriodCol: ATTR.length,
     blackRows: [],
     coloredRows,
     groups,
+    attrWidths: widths.attr,
+    periodWidth: widths.period,
   });
 }
 
@@ -291,10 +314,11 @@ export async function renderProbabilityView(
 export async function renderWeightedPipeline(
   token: string,
   spreadsheetId: string,
-  tab: string,
+  target: Target,
   deals: DealAgg[],
   periods: string[],
   periodOf: (m: string) => string,
+  widths: { attr: number[]; period: number },
 ): Promise<void> {
   const ATTR = ["Probability", "Deal", "Contract Format"];
   const width = ATTR.length + periods.length;
@@ -325,7 +349,7 @@ export async function renderWeightedPipeline(
   grid.push(["Total", "", "", ...periods.map((pp) => Math.round(totals.get(pp) ?? 0))]);
   const totalRow = grid.length - 1;
 
-  await writeOutline(token, spreadsheetId, tab, grid, {
+  await writeOutline(token, spreadsheetId, target, grid, {
     width,
     frozenCols: 3,
     firstPeriodCol: ATTR.length,
@@ -333,5 +357,7 @@ export async function renderWeightedPipeline(
     blackRows: [totalRow],
     coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })),
     groups,
+    attrWidths: widths.attr,
+    periodWidth: widths.period,
   });
 }

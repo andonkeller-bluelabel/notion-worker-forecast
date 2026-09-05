@@ -5,7 +5,7 @@
  */
 
 import { worker, googleAuth } from "../worker.js";
-import { getSheetStructure, getValues, getCellFormat, getRangeValueFormats } from "../lib/sheets.js";
+import { getSheetStructure, getValues, getCellFormat, getRangeValueFormats, getColumnWidths } from "../lib/sheets.js";
 
 const TAB = process.env.INSPECT_TAB || "By Client";
 
@@ -19,9 +19,11 @@ worker.webhook("inspectSheet", {
       sheets?: { properties?: { title?: string; sheetId?: number; gridProperties?: unknown }; rowGroups?: unknown; merges?: unknown }[];
     };
     console.log(`[inspect] ALL TABS=${JSON.stringify((struct.sheets ?? []).map((x) => x.properties?.title))}`);
+    console.log(`[inspect] TAB IDS=${JSON.stringify((struct.sheets ?? []).map((x) => [x.properties?.title, x.properties?.sheetId]))}`);
     const s = (struct.sheets ?? []).find((x) => x.properties?.title === TAB);
     console.log(`[inspect] TAB="${TAB}"`);
     console.log(`[inspect] gridProperties=${JSON.stringify(s?.properties?.gridProperties)}`);
+    console.log(`[inspect] colWidths=${JSON.stringify(await getColumnWidths(token, sheetId, TAB))}`);
     console.log(`[inspect] rowGroups=${JSON.stringify(s?.rowGroups)}`);
     console.log(`[inspect] merges=${JSON.stringify(s?.merges)}`);
     // Full grid (labels + all period columns), tall enough to include the total row.

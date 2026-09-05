@@ -139,6 +139,18 @@ export async function getCellFormat(token: string, spreadsheetId: string, a1Rang
   return sheetsRequestJson(token, url, "spreadsheets.get.cellFormat");
 }
 
+/** Read each column's pixel width for a tab (columnMetadata over A..P). */
+export async function getColumnWidths(token: string, spreadsheetId: string, tab: string): Promise<number[]> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `?ranges=${encodeURIComponent(`${tab}!A1:P1`)}` +
+    `&fields=${encodeURIComponent("sheets(data(columnMetadata(pixelSize)))")}`;
+  const json = (await sheetsRequestJson(token, url, "spreadsheets.get.colWidths")) as {
+    sheets?: { data?: { columnMetadata?: { pixelSize?: number }[] }[] }[];
+  };
+  return (json.sheets?.[0]?.data?.[0]?.columnMetadata ?? []).map((c) => c.pixelSize ?? 0);
+}
+
 /** Get a tab's structural facts: gridProperties (frozen/size), rowGroups, merges, conditional formats. */
 export async function getSheetStructure(token: string, spreadsheetId: string): Promise<unknown> {
   const url =
@@ -157,15 +169,28 @@ export async function batchUpdate(
   return sheetsRequestJson(token, url, "spreadsheets.batchUpdate", { method: "POST", body: { requests } });
 }
 
-/** Create a tab if it doesn't already exist. */
-export async function ensureTab(token: string, spreadsheetId: string, title: string): Promise<void> {
-  const titles = await getSheetTitles(token, spreadsheetId);
-  if (titles.has(title)) return;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
-  await sheetsRequestJson(token, url, "spreadsheets.batchUpdate", {
-    method: "POST",
-    body: { requests: [{ addSheet: { properties: { title } } }] },
-  });
+/** Create a tab if it doesn't already exist; returns its sheetId either way. */
+export async function ensureTab(token: string, spreadsheetId: string, title: string): Promise<number> {
+  const meta = await getSheetMeta(token, spreadsheetId);
+  const found = meta.find((m) => m.title === title);
+  if (found) return found.sheetId;
+  const resp = (await batchUpdate(token, spreadsheetId, [{ addSheet: { properties: { title } } }])) as {
+    replies?: { addSheet?: { properties?: { sheetId?: number } } }[];
+  };
+  return resp.replies?.[0]?.addSheet?.properties?.sheetId ?? -1;
+}
+
+/** Delete any of the given tabs by stable sheetId that still exist (safe across renames). */
+export async function deleteTabsById(token: string, spreadsheetId: string, sheetIds: number[]): Promise<void> {
+  const meta = await getSheetMeta(token, spreadsheetId);
+  const present = new Set(meta.map((m) => m.sheetId));
+  const ids = sheetIds.filter((id) => present.has(id));
+  if (ids.length === 0) return;
+  await batchUpdate(
+    token,
+    spreadsheetId,
+    ids.map((sheetId) => ({ deleteSheet: { sheetId } })),
+  );
 }
 
 /** Delete any of the named tabs that exist (best-effort cleanup). */
