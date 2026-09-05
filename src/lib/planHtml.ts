@@ -145,7 +145,7 @@ ${BRAND_FONTS}
       acc+=sg[1];
     });
     svg.appendChild(el("line",{x1:x-7,x2:x+bw+7,y1:y(p.t),y2:y(p.t),stroke:"var(--ink)","stroke-width":2.5}));
-    var pl=el("text",{x:cx,y:y(Math.max(p.t,p.tot))-8,"text-anchor":"middle",fill:p.pc>=95?"var(--good-ink)":(p.pc>=70?"var(--warn-ink)":"var(--crit-ink)"),"font-size":12,"font-family":'"NB Mono",monospace'});
+    var pl=el("text",{x:cx,y:y(p.tot)-8,"text-anchor":"middle",fill:p.pc>=95?"var(--good-ink)":(p.pc>=70?"var(--warn-ink)":"var(--crit-ink)"),"font-size":12,"font-family":'"NB Mono",monospace'});
     pl.textContent=Math.round(p.pc)+"%";svg.appendChild(pl);
     var lb=el("text",{x:cx,y:H-PB+18,"text-anchor":"middle",fill:i>=NOWIDX&&NOWIDX>=0?"var(--ink-2)":"var(--ink-3)","font-size":10,"font-family":'"NB Mono",monospace'});
     lb.textContent=p.q;svg.appendChild(lb);
