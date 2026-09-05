@@ -5,7 +5,7 @@
  */
 
 import { worker, googleAuth } from "../worker.js";
-import { getSheetStructure, getValues, getCellFormat, getRangeValueFormats, getColumnWidths } from "../lib/sheets.js";
+import { getSheetStructure, getValues, getCellFormat, getRangeValueFormats, getColumnWidths, getValuesFormula } from "../lib/sheets.js";
 
 const TAB = process.env.INSPECT_TAB || "By Client";
 
@@ -32,6 +32,8 @@ worker.webhook("inspectSheet", {
     // Wide header block (all columns, first rows) — for finding quarter/target columns.
     const wide = await getValues(token, sheetId, `${TAB}!A1:BA8`);
     console.log(`[inspect] wideHead=${JSON.stringify(wide)}`);
+    const formulas = await getValuesFormula(token, sheetId, process.env.INSPECT_FORMULA_RANGE || `${TAB}!A1:BA8`);
+    console.log(`[inspect] formulas=${JSON.stringify(formulas)}`);
     // Full header row across many columns to see the column order.
     const header = await getValues(token, sheetId, `${TAB}!1:1`);
     console.log(`[inspect] header=${JSON.stringify(header[0])}`);

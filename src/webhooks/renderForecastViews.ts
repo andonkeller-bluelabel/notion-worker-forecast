@@ -9,7 +9,7 @@
  */
 
 import { worker, googleAuth } from "../worker.js";
-import { readSegments } from "../lib/notionForecast.js";
+import { readSegments, readTargets } from "../lib/notionForecast.js";
 import { aggregateDeals, renderPartnerClientView, renderProbabilityView, renderWeightedPipeline, type Target } from "../lib/render.js";
 import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
 import { deleteTabs, deleteTabsById, getSheetMeta, ensureTab } from "../lib/sheets.js";
@@ -51,6 +51,7 @@ worker.webhook("renderForecastViews", {
         if (!sheetId) throw new Error("FORECAST_SHEET_ID not set");
         const token = await googleAuth.accessToken();
         const deals = aggregateDeals(await readSegments(notion));
+        const targets = await readTargets(notion);
 
         const quarters = quartersRange();
         // Monthly headers use the "2026.09" dot form (matching the "2026.Qx" quarters);
@@ -67,7 +68,7 @@ worker.webhook("renderForecastViews", {
 
         await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client View"), deals, quarters, monthToQuarter, CLIENT_W);
         await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientMonthly, "Client Monthly"), deals, months, monthLabel, CLIENT_MONTHLY_W);
-        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline View"), deals, quarters, monthToQuarter, PIPELINE_W);
+        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline View"), deals, quarters, monthToQuarter, PIPELINE_W, targets);
         await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineMonthly, "Pipeline Monthly"), deals, months, monthLabel, PIPELINE_MONTHLY_W);
         await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weighted, "Weighted Pipeline"), deals, quarters, monthToQuarter, WEIGHTED_W);
         await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Pipeline | Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);

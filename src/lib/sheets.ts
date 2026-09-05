@@ -113,6 +113,15 @@ export async function getValues(token: string, spreadsheetId: string, a1Range: s
   return json.values ?? [];
 }
 
+/** Read a range's FORMULAS (the =… text where present, else the literal value). */
+export async function getValuesFormula(token: string, spreadsheetId: string, a1Range: string): Promise<(string | number)[][]> {
+  const url =
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+    `/values/${encodeURIComponent(a1Range)}?valueRenderOption=FORMULA`;
+  const json = await sheetsRequestJson<{ values?: (string | number)[][] }>(token, url, "values.get.formula");
+  return json.values ?? [];
+}
+
 /** Read a range's UNFORMATTED values (numbers stay numbers, strings stay strings). */
 export async function getValuesUnformatted(token: string, spreadsheetId: string, a1Range: string): Promise<(string | number)[][]> {
   const url =
