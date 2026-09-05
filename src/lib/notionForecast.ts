@@ -107,6 +107,26 @@ function toSegment(props: Props): Segment {
   };
 }
 
+/** Revenue Targets data source (collection) id — one row per quarter (Name = "YYYY.Q#", Revenue Target = $). */
+export const REVENUE_TARGETS_DS = "3d24ed00-8078-809a-9a06-000be9fdbb2d";
+
+/** Read the Revenue Targets DB into a Map of quarter ("2026.Q3") → target dollars. */
+export async function readTargets(notion: Client): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({ data_source_id: REVENUE_TARGETS_DS, start_cursor: cursor, page_size: 100 });
+    for (const page of res.results) {
+      const props = (page as { properties?: Props }).properties;
+      if (!props) continue;
+      const q = (notionPropertyToString(props["Name"]) ?? "").trim();
+      if (q) out.set(q, numberOf(props["Revenue Target"]));
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return out;
+}
+
 /** Query every non-archived Deal Revenue Schedule row → Segment[]. */
 export async function readSegments(notion: Client): Promise<Segment[]> {
   const out: Segment[] = [];

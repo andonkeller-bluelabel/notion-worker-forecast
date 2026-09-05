@@ -29,6 +29,9 @@ worker.webhook("inspectSheet", {
     // Full grid (labels + all period columns), tall enough to include the total row.
     const vals = await getValues(token, sheetId, `${TAB}!A1:P160`);
     console.log(`[inspect] grid=${JSON.stringify(vals)}`);
+    // Wide header block (all columns, first rows) — for finding quarter/target columns.
+    const wide = await getValues(token, sheetId, `${TAB}!A1:BA8`);
+    console.log(`[inspect] wideHead=${JSON.stringify(wide)}`);
     // Full header row across many columns to see the column order.
     const header = await getValues(token, sheetId, `${TAB}!1:1`);
     console.log(`[inspect] header=${JSON.stringify(header[0])}`);
