@@ -359,7 +359,7 @@ export async function renderPartnerClientView(
     firstPeriodCol: ATTR.length,
     percentCol: 0,
     blackRows: partnerRows,
-    coloredRows: clientRows.map((r) => ({ row: r, bg: CLIENT_BG })),
+    coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })), // Client Partner keeps light blue client rows
     groups,
     attrWidths: widths.attr,
     periodWidth: widths.period,
@@ -503,7 +503,7 @@ export async function renderProbabilityView(
     h2[labelCol] = ATTR[labelCol]!; // "Contract Format"
     periods.forEach((q, i) => (h2[P0 + i] = q));
     grid.push(h2);
-    groups.push({ start: 1, end: 7 }); // collapsible Stats block (rows 2-7)
+    groups.push({ start: 1, end: 9 }); // collapsible top block (rows 2-9: Stats + spacer + repeated header)
     for (let r = 0; r <= 8; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: GREY_ROW_TEXT }); // rows 1-9 → #efefef
   }
 
@@ -560,7 +560,7 @@ export async function renderProbabilityView(
       grid.push(wtRow);
       coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
       const wgRow = blank();
-      wgRow[labelCol] = "Weighted Gap to Target"; // cumulative weighted − target
+      wgRow[labelCol] = "Weighted Gap"; // cumulative weighted − target
       periods.forEach((_q, i) => (wgRow[P0 + i] = hasT(i) ? `=${col(i)}${sp.wt}-${col(i)}$${TARGET_ROW}` : ""));
       grid.push(wgRow);
       coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
