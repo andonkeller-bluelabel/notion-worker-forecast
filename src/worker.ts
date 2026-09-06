@@ -31,7 +31,7 @@ export const googleAuth = worker.oauth("googleAuth", {
   name: "google-sheets-oauth",
   authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
   tokenEndpoint: "https://oauth2.googleapis.com/token",
-  scope: "https://www.googleapis.com/auth/spreadsheets",
+  scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly",
   clientId: process.env.GOOGLE_CLIENT_ID ?? "",
   clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   authorizationParams: { access_type: "offline", prompt: "consent" },
