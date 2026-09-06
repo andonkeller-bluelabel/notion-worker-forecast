@@ -1,11 +1,11 @@
 /**
  * renderForecastViews webhook — writes the Current2-style outline views, addressed by
  * stable sheetId (VIEW_TABS) so they follow the user's tab renames instead of being recreated:
- *   • Client View / Client Monthly       (group: Client Partner → Client; raw $)
- *   • Pipeline View / Pipeline Monthly    (group: probability %; raw $)
- *   • Weighted Pipeline / … | Monthly     (group: Client only, alpha; weighted $ + total row)
+ *   • Client Partner    (quarterly; group: Client Partner → Client; raw $ + annotation cols)
+ *   • Pipeline          (quarterly; group: probability %; raw $ + Stats block)
+ *   • Weighted Monthly  (monthly; group: Client only, alpha; weighted $ + total row)
  * Collapsible native row groups, deal hyperlinks, accounting `$ -`, hand-tuned column widths.
- * Also deletes the superseded duplicate/pivot tabs. Payload ignored.
+ * Also deletes the superseded duplicate/pivot and retired monthly tabs. Payload ignored.
  */
 
 import { worker, googleAuth } from "../worker.js";
@@ -15,25 +15,22 @@ import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
 import { deleteTabs, deleteTabsById, getSheetMeta, ensureTab } from "../lib/sheets.js";
 import { postForecastOps } from "../lib/slack.js";
 
-/** Stable sheetIds of the six view tabs. We render by ID so renames never recreate them. */
+/** Stable sheetIds of the three view tabs we keep. We render by ID so renames never recreate them. */
 const VIEW_TABS = {
-  clientView: 1834696165,
-  pipelineView: 385847462,
-  clientMonthly: 175268818,
-  pipelineMonthly: 1048787530,
-  weighted: 1415553020,
-  weightedMonthly: 519992960,
+  clientView: 1834696165, // "Client Partner" (quarterly)
+  pipelineView: 385847462, // "Pipeline" (quarterly)
+  weightedMonthly: 519992960, // "Weighted Monthly"
 } as const;
 
-/** Old By Client / Pipeline duplicate tabs (recreated before we switched to ID targeting). Delete by ID. */
-const ORPHAN_TAB_IDS = [1761354226, 1091496648, 423840615, 1127543954];
+/** Old duplicate/pivot tabs plus the retired monthly/quarterly views the user dropped. Delete by ID. */
+const ORPHAN_TAB_IDS = [
+  1761354226, 1091496648, 423840615, 1127543954, // pre-ID-targeting duplicates
+  175268818, 1048787530, 1415553020, // retired: Client Monthly, Pipeline Monthly, Weighted Pipeline
+];
 
 /** Hand-tuned column widths (px), read from the user's tabs. attr = per attribute column, period = uniform. */
 const CLIENT_W = { attr: [82, 400, 160], period: 86 };
-const CLIENT_MONTHLY_W = { attr: [82, 400, 160], period: 87 };
 const PIPELINE_W = { attr: [100, 134, 400, 160], period: 92 };
-const PIPELINE_MONTHLY_W = { attr: [100, 174, 400, 160], period: 91 };
-const WEIGHTED_W = { attr: [82, 400, 160], period: 86 }; // Client-View layout
 const WEIGHTED_MONTHLY_W = { attr: [82, 400, 160], period: 87 };
 
 /** Tabs from earlier iterations that these views replace. */
@@ -75,16 +72,13 @@ worker.webhook("renderForecastViews", {
           return title ? { sheetId: id, title } : { sheetId: await ensureTab(token, sheetId, canonical), title: canonical };
         };
 
-        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client View"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras);
-        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientMonthly, "Client Monthly"), deals, months, monthLabel, CLIENT_MONTHLY_W);
-        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline View"), deals, quarters, monthToQuarter, PIPELINE_W, targets);
-        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineMonthly, "Pipeline Monthly"), deals, months, monthLabel, PIPELINE_MONTHLY_W);
-        await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weighted, "Weighted Pipeline"), deals, quarters, monthToQuarter, WEIGHTED_W);
-        await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Pipeline | Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);
+        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client Partner"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras);
+        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline"), deals, quarters, monthToQuarter, PIPELINE_W, targets, clientExtras.visiblePeriods);
+        await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);
         await deleteTabsById(token, sheetId, ORPHAN_TAB_IDS);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
 
-        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → Client View (Q+M), Pipeline View (Q+M), Weighted Pipeline (Q+M).`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → Client Partner, Pipeline, Weighted Monthly.`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {

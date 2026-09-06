@@ -371,6 +371,7 @@ export async function renderProbabilityView(
   periodOf: (m: string) => string,
   widths: { attr: number[]; period: number },
   cascadeTargets?: Map<string, number>,
+  visiblePeriods?: string[],
 ): Promise<void> {
   const ATTR = ["Client Partner", "Client", "Deal", "Contract Format"];
   const width = ATTR.length + periods.length;
@@ -379,7 +380,7 @@ export async function renderProbabilityView(
   const blank = () => Array(width).fill("") as (string | number)[];
   const showSummary = !!cascadeTargets;
   const col = (i: number) => colA1(P0 + i);
-  const TARGET_ROW = 3; // when showSummary, Target lives on sheet row 3 (rows 1-2 = quarter labels, Weighted Value)
+  const TARGET_ROW = 5; // Target lives on sheet row 5 in the Stats block (rows 1-10)
 
   // Group deals by probability %; deal section shows the present stages high → low.
   const byProb = new Map<number, DealAgg[]>();
@@ -397,7 +398,7 @@ export async function renderProbabilityView(
 
   // --- Pass 1: 1-based sheet rows. Each stage is [header + deals] immediately followed by its OWN
   // summary rows, so cascade formulas (which reference the prior tier's rows) still resolve above. ---
-  const headerRow = (showSummary ? 6 : 0) + 1; // rows 1-6 = quarters / Weighted Value / Target / QoQ Target / QoQ Actual / blank
+  const headerRow = (showSummary ? 10 : 0) + 1; // rows 1-10 = the collapsible Stats block
   let cur = headerRow + 1;
   const dealPos = new Map<number, { start: number; end: number }>();
   // 100% is consolidated to 2 rows (Gap to Target, Weighted Total=SUM); lower stages keep 4.
@@ -430,17 +431,30 @@ export async function renderProbabilityView(
 
   if (showSummary) {
     const finalWt = (sumPos.get(0) ?? sumPos.get(CASCADE_STAGES[CASCADE_STAGES.length - 1]!)!).wt; // 0% cumulative = total weighted
-    const actualWt = sumPos.get(100)?.wt; // 100% committed Weighted Total (QoQ Actual Growth source)
-    // r1: quarter labels — mirror the header's quarter cells so they sit above the summary block.
+    const actualWt = sumPos.get(100)?.wt; // 100% committed Weighted Total
+    const WV_ROW = 4; // Weighted Value on sheet row 4 (Target on row 5 = TARGET_ROW)
+    const hasT = (q: string) => cascadeTargets!.get(q) != null;
+    // r1: "Stats" section label (the block below is collapsible).
+    const stats = blank();
+    stats[0] = "Stats";
+    grid.push(stats);
+    // r2: quarter labels — mirror the header's quarter cells.
     const ql = blank();
     periods.forEach((_q, i) => (ql[P0 + i] = `=${col(i)}${headerRow}`));
     grid.push(ql);
-    // r2: Weighted Value = grand cumulative weighted (0% Weighted Total).
+    // r3: QoQ Target Growth = (this Target − prev) / prev.
+    const qtg = blank();
+    qtg[labelCol] = "QoQ Target Growth";
+    periods.forEach((_q, i) => {
+      if (i > 0) qtg[P0 + i] = `=(${col(i)}${TARGET_ROW}-${col(i - 1)}${TARGET_ROW})/${col(i - 1)}${TARGET_ROW}`;
+    });
+    grid.push(qtg);
+    // r4: Weighted Value = grand cumulative weighted (0% Weighted Total).
     const wv = blank();
     wv[labelCol] = "Weighted Value";
     periods.forEach((_q, i) => (wv[P0 + i] = `=${col(i)}${finalWt}`));
     grid.push(wv);
-    // r3: Target (input value).
+    // r5: Target (input value).
     const tg = blank();
     tg[labelCol] = "Target";
     periods.forEach((q, i) => {
@@ -448,26 +462,35 @@ export async function renderProbabilityView(
       tg[P0 + i] = t != null ? Math.round(t) : "";
     });
     grid.push(tg);
-    // r4: QoQ Target Growth = (this Target − prev) / prev.
-    const qtg = blank();
-    qtg[labelCol] = "QoQ Target Growth";
-    periods.forEach((_q, i) => {
-      if (i > 0) qtg[P0 + i] = `=(${col(i)}${TARGET_ROW}-${col(i - 1)}${TARGET_ROW})/${col(i - 1)}${TARGET_ROW}`;
+    // r6: Weighted Gap = Weighted Value − Target.
+    const wgap = blank();
+    wgap[labelCol] = "Weighted Gap";
+    periods.forEach((q, i) => {
+      if (hasT(q)) wgap[P0 + i] = `=${col(i)}${WV_ROW}-${col(i)}${TARGET_ROW}`;
     });
-    grid.push(qtg);
-    // r5: QoQ Actual Growth = (this committed − prev) / prev (100% Weighted Total).
-    const qag = blank();
-    qag[labelCol] = "QoQ Actual Growth";
+    grid.push(wgap);
+    // r7: Coverage % = Weighted Value ÷ Target.
+    const cov = blank();
+    cov[labelCol] = "Coverage %";
+    periods.forEach((q, i) => {
+      if (hasT(q)) cov[P0 + i] = `=${col(i)}${WV_ROW}/${col(i)}${TARGET_ROW}`;
+    });
+    grid.push(cov);
+    // r8: Closed % = committed (100% Weighted Total) ÷ Target.
+    const closed = blank();
+    closed[labelCol] = "Closed %";
     if (actualWt)
-      periods.forEach((_q, i) => {
-        if (i > 0) qag[P0 + i] = `=(${col(i)}${actualWt}-${col(i - 1)}${actualWt})/${col(i - 1)}${actualWt}`;
+      periods.forEach((q, i) => {
+        if (hasT(q)) closed[P0 + i] = `=${col(i)}${actualWt}/${col(i)}${TARGET_ROW}`;
       });
-    grid.push(qag);
-    grid.push(blank()); // r6
+    grid.push(closed);
+    grid.push(blank()); // r9
+    grid.push(blank()); // r10
+    groups.push({ start: 1, end: 10 }); // collapsible Stats block (rows 2-10); "Stats" (row 1) stays visible
   }
   const headerRowIndex = grid.length;
   grid.push([...ATTR, ...periods]);
-  // Top block (quarter labels → header) gets the #efefef summary background.
+  // Stats block + header get the #efefef summary background with grey text.
   if (showSummary) for (let r = 0; r <= headerRowIndex; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
 
   // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
@@ -497,8 +520,7 @@ export async function renderProbabilityView(
     // Gap to Target — first summary row, carries the stage %. 100%: own Weighted Total − Target;
     // lower tiers: the prior tier's outgoing gap (the cascade).
     const gapRow = blank();
-    gapRow[labelCol - 1] = `'${s}%`;
-    gapRow[labelCol] = "Gap to Target";
+    gapRow[labelCol] = "Gap to Target"; // stage % lives on the group header above; not repeated here
     periods.forEach((_q, i) => {
       const c = col(i);
       gapRow[P0 + i] = !hasT(i) ? "" : si === 0 ? `=${c}${sp.wt}-${c}$${TARGET_ROW}` : `=${c}${prev!.outGap}`;
@@ -542,8 +564,9 @@ export async function renderProbabilityView(
     periodWidth: widths.period,
     headerRowIndex,
     greyRows: greyRanges,
-    percentRows: showSummary ? [3, 4] : [], // QoQ Target/Actual Growth rows
-    boldRows: showSummary ? [0, headerRowIndex] : [], // quarter labels + header
+    percentRows: showSummary ? [2, 6, 7] : [], // QoQ Target Growth, Coverage %, Closed %
+    boldRows: showSummary ? [0, 1, headerRowIndex] : [], // Stats, quarter labels, header
+    hideCols: visiblePeriods ? periods.map((q, i) => (visiblePeriods.includes(q) ? -1 : ATTR.length + i)).filter((c) => c >= 0) : undefined,
   });
 }
 
