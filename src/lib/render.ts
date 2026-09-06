@@ -76,6 +76,7 @@ function colA1(i: number): string {
 }
 
 const BLUE = { red: 0.8117647, green: 0.8862745, blue: 0.9529412 };
+const CLIENT_BG = { red: 0.8509804, green: 0.8235294, blue: 0.9137255 }; // client rows (purple)
 const GREEN = { red: 0.85, green: 0.92, blue: 0.83 };
 const GRAY = { red: 0.94, green: 0.94, blue: 0.94 };
 const BLACK = { red: 0, green: 0, blue: 0 };
@@ -246,7 +247,7 @@ async function writeOutline(
     });
   // Column visibility: unhide everything, then hide the requested columns — idempotent as the window shifts.
   if (opts.hideCols) {
-    reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: Math.max(opts.width, 26) }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } });
+    reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: opts.width }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } });
     for (const c of opts.hideCols)
       reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: c, endIndex: c + 1 }, properties: { hiddenByUser: true }, fields: "hiddenByUser" } });
   }
@@ -270,8 +271,8 @@ async function writeOutline(
       },
     },
   });
-  // Trim trailing empty rows: shrink the grid to exactly the rows we wrote (last, so nothing references beyond).
-  reqs.push({ updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: grid.length } }, fields: "gridProperties.rowCount" } });
+  // Trim trailing empty rows AND columns: shrink the grid to exactly what we wrote (removes stray Q:Z etc.).
+  reqs.push({ updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: grid.length, columnCount: opts.width } }, fields: "gridProperties(rowCount,columnCount)" } });
   await batchUpdate(token, spreadsheetId, reqs);
 }
 
@@ -350,7 +351,7 @@ export async function renderPartnerClientView(
     firstPeriodCol: ATTR.length,
     percentCol: 0,
     blackRows: partnerRows,
-    coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })),
+    coloredRows: clientRows.map((r) => ({ row: r, bg: CLIENT_BG })),
     groups,
     attrWidths: widths.attr,
     periodWidth: widths.period,
@@ -627,7 +628,7 @@ export async function renderWeightedPipeline(
     firstPeriodCol: ATTR.length,
     percentCol: 0,
     blackRows: [totalRow],
-    coloredRows: clientRows.map((r) => ({ row: r, bg: BLUE })),
+    coloredRows: clientRows.map((r) => ({ row: r, bg: CLIENT_BG })),
     groups,
     attrWidths: widths.attr,
     periodWidth: widths.period,
