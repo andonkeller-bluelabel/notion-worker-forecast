@@ -83,6 +83,7 @@ const WHITE = { red: 1, green: 1, blue: 1 };
 const GREY_TEXT = { red: 0.6, green: 0.6, blue: 0.6 };
 const ZERO_GREY = { red: 0.85098039, green: 0.85098039, blue: 0.85098039 }; // #d9d9d9 — muted text for $0 deal cells
 const SUMMARY_BG = { red: 0.9372549, green: 0.9372549, blue: 0.9372549 }; // #efefef — calculated/summary rows
+const NEG_RED = { red: 0.6509804, green: 0.10980392, blue: 0 }; // #a61c00 — negative-number text
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
 /** Per-probability header colors for the By Stage views (Google "light 3" palette). */
@@ -131,6 +132,8 @@ async function writeOutline(
     periodWidth: number; // pixel width for every period column
     headerRowIndex?: number; // 0-based grid row of the header (default 0); rows above it are summary/top rows
     greyRows?: { start: number; end: number }[]; // row ranges whose Contract-Format col gets grey text (default: all data rows)
+    percentRows?: number[]; // rows whose period cells get 0% format (e.g. QoQ growth)
+    boldRows?: number[]; // rows rendered bold across all columns
   },
 ): Promise<void> {
   const { sheetId, title } = target;
@@ -182,9 +185,26 @@ async function writeOutline(
       },
     });
   }
+  // Percent number format on specific rows' period cells (e.g. QoQ growth), overriding accounting.
+  for (const r of opts.percentRows ?? [])
+    reqs.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: r, endRowIndex: r + 1, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width },
+        cell: { userEnteredFormat: { numberFormat: { type: "PERCENT", pattern: "0%" } } },
+        fields: "userEnteredFormat.numberFormat",
+      },
+    });
   reqs.push(setBg(sheetId, hr, opts.width, GRAY)); // header
   for (const r of opts.blackRows) reqs.push(setBg(sheetId, r, opts.width, BLACK, WHITE));
   for (const c of opts.coloredRows) reqs.push(setBg(sheetId, c.row, opts.width, c.bg));
+  for (const r of opts.boldRows ?? [])
+    reqs.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: r, endRowIndex: r + 1, startColumnIndex: 0, endColumnIndex: opts.width },
+        cell: { userEnteredFormat: { textFormat: { bold: true } } },
+        fields: "userEnteredFormat.textFormat.bold",
+      },
+    });
   // Grey text on the Contract Format column (last attribute col) for deal rows only.
   const greys = opts.greyRows ?? [{ start: hr + 1, end: grid.length }];
   for (const grey of greys)
@@ -216,6 +236,16 @@ async function writeOutline(
       rule: {
         ranges: [{ sheetId, startRowIndex: 0, endRowIndex: 1000, startColumnIndex: 0, endColumnIndex: 26 }], // A:Z, every cell
         booleanRule: { condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "0" }] }, format: { textFormat: { foregroundColor: ZERO_GREY } } },
+      },
+    },
+  });
+  // Conditional format: red text on negative numbers (A:Z, every cell).
+  reqs.push({
+    addConditionalFormatRule: {
+      index: 0,
+      rule: {
+        ranges: [{ sheetId, startRowIndex: 0, endRowIndex: 1000, startColumnIndex: 0, endColumnIndex: 26 }],
+        booleanRule: { condition: { type: "NUMBER_LESS", values: [{ userEnteredValue: "0" }] }, format: { textFormat: { foregroundColor: NEG_RED } } },
       },
     },
   });
@@ -298,7 +328,7 @@ export async function renderProbabilityView(
   const blank = () => Array(width).fill("") as (string | number)[];
   const showSummary = !!cascadeTargets;
   const col = (i: number) => colA1(P0 + i);
-  const TARGET_ROW = 2; // when showSummary, Target lives on sheet row 2
+  const TARGET_ROW = 3; // when showSummary, Target lives on sheet row 3 (rows 1-2 = quarter labels, Weighted Value)
 
   // Group deals by probability %; deal section shows the present stages high → low.
   const byProb = new Map<number, DealAgg[]>();
@@ -316,7 +346,7 @@ export async function renderProbabilityView(
 
   // --- Pass 1: 1-based sheet rows. Each stage is [header + deals] immediately followed by its OWN
   // summary rows, so cascade formulas (which reference the prior tier's rows) still resolve above. ---
-  const headerRow = (showSummary ? 3 : 0) + 1; // rows 1-2 = Weighted Value/Target, 3 = blank
+  const headerRow = (showSummary ? 6 : 0) + 1; // rows 1-6 = quarters / Weighted Value / Target / QoQ Target / QoQ Actual / blank
   let cur = headerRow + 1;
   const dealPos = new Map<number, { start: number; end: number }>();
   // 100% is consolidated to 2 rows (Gap to Target, Weighted Total=SUM); lower stages keep 4.
@@ -349,21 +379,45 @@ export async function renderProbabilityView(
 
   if (showSummary) {
     const finalWt = (sumPos.get(0) ?? sumPos.get(CASCADE_STAGES[CASCADE_STAGES.length - 1]!)!).wt; // 0% cumulative = total weighted
+    const actualWt = sumPos.get(100)?.wt; // 100% committed Weighted Total (QoQ Actual Growth source)
+    // r1: quarter labels — mirror the header's quarter cells so they sit above the summary block.
+    const ql = blank();
+    periods.forEach((_q, i) => (ql[P0 + i] = `=${col(i)}${headerRow}`));
+    grid.push(ql);
+    // r2: Weighted Value = grand cumulative weighted (0% Weighted Total).
     const wv = blank();
     wv[labelCol] = "Weighted Value";
     periods.forEach((_q, i) => (wv[P0 + i] = `=${col(i)}${finalWt}`));
     grid.push(wv);
+    // r3: Target (input value).
     const tg = blank();
-    tg[labelCol] = "Target"; // an input value, not a calculation
+    tg[labelCol] = "Target";
     periods.forEach((q, i) => {
       const t = cascadeTargets!.get(q);
       tg[P0 + i] = t != null ? Math.round(t) : "";
     });
     grid.push(tg);
-    grid.push(blank());
+    // r4: QoQ Target Growth = (this Target − prev) / prev.
+    const qtg = blank();
+    qtg[labelCol] = "QoQ Target Growth";
+    periods.forEach((_q, i) => {
+      if (i > 0) qtg[P0 + i] = `=(${col(i)}${TARGET_ROW}-${col(i - 1)}${TARGET_ROW})/${col(i - 1)}${TARGET_ROW}`;
+    });
+    grid.push(qtg);
+    // r5: QoQ Actual Growth = (this committed − prev) / prev (100% Weighted Total).
+    const qag = blank();
+    qag[labelCol] = "QoQ Actual Growth";
+    if (actualWt)
+      periods.forEach((_q, i) => {
+        if (i > 0) qag[P0 + i] = `=(${col(i)}${actualWt}-${col(i - 1)}${actualWt})/${col(i - 1)}${actualWt}`;
+      });
+    grid.push(qag);
+    grid.push(blank()); // r6
   }
   const headerRowIndex = grid.length;
   grid.push([...ATTR, ...periods]);
+  // Top block (quarter labels → header) gets the #efefef summary background.
+  if (showSummary) for (let r = 0; r <= headerRowIndex; r++) coloredRows.push({ row: r, bg: SUMMARY_BG });
 
   // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
   for (const s of orderedStages) {
@@ -437,6 +491,8 @@ export async function renderProbabilityView(
     periodWidth: widths.period,
     headerRowIndex,
     greyRows: greyRanges,
+    percentRows: showSummary ? [3, 4] : [], // QoQ Target/Actual Growth rows
+    boldRows: showSummary ? [0, headerRowIndex] : [], // quarter labels + header
   });
 }
 

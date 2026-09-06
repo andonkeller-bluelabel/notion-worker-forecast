@@ -42,6 +42,44 @@ worker.webhook("inspectSheet", {
     // Full header row across many columns to see the column order.
     const header = await getValues(token, sheetId, `${TAB}!1:1`);
     console.log(`[inspect] header=${JSON.stringify(header[0])}`);
+
+    // Rich read: notes (the user's "comments"), backgrounds, borders, number formats, text style —
+    // to catch added rows / formatting / instructions. Logged compactly, per non-empty cell/row.
+    const richUrl =
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}?ranges=${encodeURIComponent(`${TAB}!A1:P200`)}` +
+      `&fields=${encodeURIComponent("sheets.data.rowData.values(formattedValue,note,effectiveFormat(backgroundColor,textFormat(bold,italic,strikethrough,foregroundColor),numberFormat,borders(top,bottom)))")}`;
+    const richRes = await fetch(richUrl, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+    const rich = (await richRes.json()) as {
+      sheets?: { data?: { rowData?: { values?: Record<string, unknown>[] }[] }[] }[];
+    };
+    const rowData = rich.sheets?.[0]?.data?.[0]?.rowData ?? [];
+    rowData.forEach((rd, ri) => {
+      (rd.values ?? []).forEach((c, ci) => {
+        if (c?.note) console.log(`[note] r${ri + 1} ${String.fromCharCode(65 + ci)}: ${JSON.stringify(c.note)}`);
+      });
+      // Per-row formatting signature (first cell with content or format), to spot bg/border/bold/numfmt.
+      const cells = rd.values ?? [];
+      const label = (cells.find((c) => (c?.formattedValue as string)?.trim())?.formattedValue as string) ?? "";
+      const sig = cells
+        .map((c, ci) => {
+          const ef = (c?.effectiveFormat ?? {}) as Record<string, unknown>;
+          const bg = ef.backgroundColor as { red?: number; green?: number; blue?: number } | undefined;
+          const tf = (ef.textFormat ?? {}) as Record<string, unknown>;
+          const bd = (ef.borders ?? {}) as Record<string, unknown>;
+          const nf = (ef.numberFormat ?? {}) as { pattern?: string };
+          const parts: string[] = [];
+          if (bg && (bg.red !== 1 || bg.green !== 1 || bg.blue !== 1)) parts.push(`bg:${bg.red?.toFixed(2)},${bg.green?.toFixed(2)},${bg.blue?.toFixed(2)}`);
+          if (tf.bold) parts.push("B");
+          if (tf.italic) parts.push("I");
+          if (tf.strikethrough) parts.push("S");
+          if (bd.top || bd.bottom) parts.push(`bdr:${bd.top ? "T" : ""}${bd.bottom ? "B" : ""}`);
+          if (nf.pattern) parts.push(`nf:${nf.pattern}`);
+          return parts.length ? `${String.fromCharCode(65 + ci)}[${parts.join(",")}]` : "";
+        })
+        .filter(Boolean)
+        .join(" ");
+      if (sig) console.log(`[fmt] r${ri + 1} "${label.slice(0, 24)}": ${sig}`);
+    });
     // Contract Format cell format (to match the grey the user applied). C = By Client, D = By Stage.
     // Column A label + background for each row (to capture per-group colors).
     const colA = await getRangeValueFormats(token, sheetId, `${TAB}!A1:A80`);
