@@ -252,7 +252,7 @@ async function writeOutline(
     addConditionalFormatRule: {
       index: 0,
       rule: {
-        ranges: [{ sheetId, startRowIndex: 0, endRowIndex: 1000, startColumnIndex: 0, endColumnIndex: 26 }], // A:Z, every cell
+        ranges: [{ sheetId, startColumnIndex: 0, endColumnIndex: 26 }], // A:Z, all rows // A:Z, every cell
         booleanRule: { condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "0" }] }, format: { textFormat: { foregroundColor: ZERO_GREY } } },
       },
     },
@@ -262,11 +262,13 @@ async function writeOutline(
     addConditionalFormatRule: {
       index: 0,
       rule: {
-        ranges: [{ sheetId, startRowIndex: 0, endRowIndex: 1000, startColumnIndex: 0, endColumnIndex: 26 }],
+        ranges: [{ sheetId, startColumnIndex: 0, endColumnIndex: 26 }], // A:Z, all rows
         booleanRule: { condition: { type: "NUMBER_LESS", values: [{ userEnteredValue: "0" }] }, format: { textFormat: { foregroundColor: NEG_RED } } },
       },
     },
   });
+  // Trim trailing empty rows: shrink the grid to exactly the rows we wrote (last, so nothing references beyond).
+  reqs.push({ updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: grid.length } }, fields: "gridProperties.rowCount" } });
   await batchUpdate(token, spreadsheetId, reqs);
 }
 
