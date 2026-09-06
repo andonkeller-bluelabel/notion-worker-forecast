@@ -139,6 +139,8 @@ async function writeOutline(
     hideCols?: number[]; // column indices to hide (hiddenByUser)
     colWidths?: number[]; // explicit per-column pixel widths (overrides attrWidths/periodWidth when given)
     wrapCols?: number[]; // column indices whose cells wrap text
+    frozenRows?: number; // frozen row count (default headerRowIndex+1)
+    merges?: { startRow: number; endRow: number; startCol: number; endCol: number }[]; // cell merges (0-based, end-exclusive)
   },
 ): Promise<void> {
   const { sheetId, title } = target;
@@ -172,7 +174,7 @@ async function writeOutline(
   });
   reqs.push({
     updateSheetProperties: {
-      properties: { sheetId, gridProperties: { frozenRowCount: hr + 1, frozenColumnCount: opts.frozenCols } },
+      properties: { sheetId, gridProperties: { frozenRowCount: opts.frozenRows ?? hr + 1, frozenColumnCount: opts.frozenCols } },
       fields: "gridProperties(frozenRowCount,frozenColumnCount)",
     },
   });
@@ -271,6 +273,12 @@ async function writeOutline(
       },
     },
   });
+  // Cell merges: clear any merges in the written region, then apply the requested ones (top-left format wins).
+  if (opts.merges?.length) {
+    reqs.push({ unmergeCells: { range: { sheetId, startRowIndex: 0, endRowIndex: grid.length, startColumnIndex: 0, endColumnIndex: opts.width } } });
+    for (const m of opts.merges)
+      reqs.push({ mergeCells: { mergeType: "MERGE_ALL", range: { sheetId, startRowIndex: m.startRow, endRowIndex: m.endRow, startColumnIndex: m.startCol, endColumnIndex: m.endCol } } });
+  }
   // Trim trailing empty rows AND columns: shrink the grid to exactly what we wrote (removes stray Q:Z etc.).
   reqs.push({ updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: grid.length, columnCount: opts.width } }, fields: "gridProperties(rowCount,columnCount)" } });
   await batchUpdate(token, spreadsheetId, reqs);
@@ -384,7 +392,7 @@ export async function renderProbabilityView(
   const blank = () => Array(width).fill("") as (string | number)[];
   const showSummary = !!cascadeTargets;
   const col = (i: number) => colA1(P0 + i);
-  const TARGET_ROW = 5; // Target lives on sheet row 5 in the Stats block (rows 1-10)
+  const TARGET_ROW = 4; // Target on sheet row 4 (header row 1, Stats rows 2-7)
 
   // Group deals by probability %; deal section shows the present stages high → low.
   const byProb = new Map<number, DealAgg[]>();
@@ -402,7 +410,8 @@ export async function renderProbabilityView(
 
   // --- Pass 1: 1-based sheet rows. Each stage is [header + deals] immediately followed by its OWN
   // summary rows, so cascade formulas (which reference the prior tier's rows) still resolve above. ---
-  const headerRow = (showSummary ? 10 : 0) + 1; // rows 1-10 = the collapsible Stats block
+  // Layout: row 1 = header, rows 2-7 = Stats, row 8 = spacer, row 9 = repeated column header, deals from row 10.
+  const headerRow = showSummary ? 9 : 1; // the column-header row directly above the deals
   let cur = headerRow + 1;
   const dealPos = new Map<number, { start: number; end: number }>();
   // 100% is consolidated to 2 rows (Gap to Target, Weighted Total=SUM); lower stages keep 4.
@@ -433,37 +442,32 @@ export async function renderProbabilityView(
   const groups: { start: number; end: number }[] = [];
   const greyRanges: { start: number; end: number }[] = []; // grey Contract-Format on deal rows only (not summary labels)
 
+  // Top block: header (row 1) → Stats (rows 2-7) → spacer (row 8) → repeated column header (row 9).
+  // A/B/C are merged down the whole block so the Client Partner/Client/Deal labels span it.
+  const headerRowIndex = 0;
+  grid.push([...ATTR, ...periods]); // row 1: header
   if (showSummary) {
     const finalWt = (sumPos.get(0) ?? sumPos.get(CASCADE_STAGES[CASCADE_STAGES.length - 1]!)!).wt; // 0% cumulative = total weighted
     const actualWt = sumPos.get(100)?.wt; // 100% committed Weighted Total
-    const WV_ROW = 4; // Weighted Value on sheet row 4 (Target on row 5 = TARGET_ROW)
+    const WV_ROW = 3; // Weighted Value on sheet row 3 (Target on row 4 = TARGET_ROW)
     const hasT = (q: string) => cascadeTargets!.get(q) != null;
-    // r1: "Stats" section label (the block below is collapsible).
-    const stats = blank();
-    stats[0] = "Stats";
-    grid.push(stats);
-    // r2: quarter labels — mirror the header's quarter cells.
-    const ql = blank();
-    periods.forEach((_q, i) => (ql[P0 + i] = `=${col(i)}${headerRow}`));
-    grid.push(ql);
-    // r3: QoQ Target Growth = (this Target − prev) / prev.
+    // r2: QoQ Target Growth = (this Target − prev) / prev; blank when either quarter's target is missing.
     const qtg = blank();
     qtg[labelCol] = "QoQ Target Growth";
     periods.forEach((_q, i) => {
       if (i > 0) {
         const c = col(i);
         const p = col(i - 1);
-        // Blank when either quarter has no target (avoids #DIV/0! and a misleading −100% past the last target).
         qtg[P0 + i] = `=IF(OR(${c}${TARGET_ROW}="",${p}${TARGET_ROW}=""),"",(${c}${TARGET_ROW}-${p}${TARGET_ROW})/${p}${TARGET_ROW})`;
       }
     });
     grid.push(qtg);
-    // r4: Weighted Value = grand cumulative weighted (0% Weighted Total).
+    // r3: Weighted Value = grand cumulative weighted (0% Weighted Total).
     const wv = blank();
     wv[labelCol] = "Weighted Value";
     periods.forEach((_q, i) => (wv[P0 + i] = `=${col(i)}${finalWt}`));
     grid.push(wv);
-    // r5: Target (input value).
+    // r4: Target (input value).
     const tg = blank();
     tg[labelCol] = "Target";
     periods.forEach((q, i) => {
@@ -471,21 +475,21 @@ export async function renderProbabilityView(
       tg[P0 + i] = t != null ? Math.round(t) : "";
     });
     grid.push(tg);
-    // r6: Weighted Gap = Weighted Value − Target.
+    // r5: Weighted Gap = Weighted Value − Target.
     const wgap = blank();
     wgap[labelCol] = "Weighted Gap";
     periods.forEach((q, i) => {
       if (hasT(q)) wgap[P0 + i] = `=${col(i)}${WV_ROW}-${col(i)}${TARGET_ROW}`;
     });
     grid.push(wgap);
-    // r7: Coverage % = Weighted Value ÷ Target.
+    // r6: Coverage % = Weighted Value ÷ Target.
     const cov = blank();
     cov[labelCol] = "Coverage %";
     periods.forEach((q, i) => {
       if (hasT(q)) cov[P0 + i] = `=${col(i)}${WV_ROW}/${col(i)}${TARGET_ROW}`;
     });
     grid.push(cov);
-    // r8: Closed % = committed (100% Weighted Total) ÷ Target.
+    // r7: Closed % = committed (100% Weighted Total) ÷ Target.
     const closed = blank();
     closed[labelCol] = "Closed %";
     if (actualWt)
@@ -493,14 +497,15 @@ export async function renderProbabilityView(
         if (hasT(q)) closed[P0 + i] = `=${col(i)}${actualWt}/${col(i)}${TARGET_ROW}`;
       });
     grid.push(closed);
-    grid.push(blank()); // r9
-    grid.push(blank()); // r10
-    groups.push({ start: 1, end: 10 }); // collapsible Stats block (rows 2-10); "Stats" (row 1) stays visible
+    grid.push(blank()); // r8: spacer
+    // r9: repeated column header directly above the deals (A-C blank — merged with row 1).
+    const h2 = blank();
+    h2[labelCol] = ATTR[labelCol]!; // "Contract Format"
+    periods.forEach((q, i) => (h2[P0 + i] = q));
+    grid.push(h2);
+    groups.push({ start: 1, end: 7 }); // collapsible Stats block (rows 2-7)
+    for (let r = 0; r <= 8; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: GREY_ROW_TEXT }); // rows 1-9 → #efefef
   }
-  const headerRowIndex = grid.length;
-  grid.push([...ATTR, ...periods]);
-  // Stats block + header get the #efefef summary background with grey text.
-  if (showSummary) for (let r = 0; r <= headerRowIndex; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
 
   // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
   for (const s of orderedStages) {
@@ -573,9 +578,12 @@ export async function renderProbabilityView(
     periodWidth: widths.period,
     headerRowIndex,
     greyRows: greyRanges,
-    percentRows: showSummary ? [2, 6, 7] : [], // QoQ Target Growth, Coverage %, Closed %
-    boldRows: showSummary ? [0, 1, headerRowIndex] : [], // Stats, quarter labels, header
+    percentRows: showSummary ? [1, 5, 6] : [], // QoQ Target Growth (r2), Coverage % (r6), Closed % (r7)
+    boldRows: [], // unbolded top block
     hideCols: visiblePeriods ? periods.map((q, i) => (visiblePeriods.includes(q) ? -1 : ATTR.length + i)).filter((c) => c >= 0) : undefined,
+    frozenRows: showSummary ? 9 : undefined, // freeze header + Stats + spacer + repeated header
+    // Merge A/B/C down over the whole top block so the header labels span rows 1-9.
+    merges: showSummary ? [0, 1, 2].map((c) => ({ startRow: 0, endRow: 9, startCol: c, endCol: c + 1 })) : undefined,
   });
 }
 
