@@ -155,6 +155,9 @@ async function writeOutline(
 
   const reqs: unknown[] = [];
   for (const g of sheet.rowGroups ?? []) if (g.range) reqs.push({ deleteDimensionGroup: { range: g.range } });
+  // Unhide every row: deleting a collapsed group leaves its rows hidden, and boundaries shift as deals
+  // are added/removed — so reset visibility each render (mirrors the column unhide below) or rows strand hidden.
+  reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "ROWS", startIndex: 0, endIndex: grid.length }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } });
   // Drop existing conditional-format rules (high→low index) so we can re-add ours idempotently.
   const cfCount = sheet.conditionalFormats?.length ?? 0;
   for (let i = cfCount - 1; i >= 0; i--) reqs.push({ deleteConditionalFormatRule: { sheetId, index: i } });
