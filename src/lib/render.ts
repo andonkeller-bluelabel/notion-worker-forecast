@@ -6,7 +6,7 @@
  * period columns (quarters or months). Cells show RAW (unweighted) revenue.
  */
 
-import { batchUpdate, getSheetStructure, writeValues, clearValues, getValues } from "./sheets.js";
+import { batchUpdate, getSheetStructure, writeValues, clearValues, getValuesFormula } from "./sheets.js";
 import { spreadSegment, type Segment } from "./forecast.js";
 import { CASCADE_STAGES } from "./coverage.js";
 
@@ -300,23 +300,26 @@ export async function renderPartnerClientView(
   const width = ATTR.length + periods.length + annoCols.length;
   const blanks = () => Array(width - 1).fill("");
 
-  // Preserve the free-text annotation columns across renders, keyed by deal title (survives reordering).
+  // Preserve the free-text annotation columns across renders. Key by the deal's stable ID (embedded in
+  // the Deal cell's HYPERLINK URL) so notes survive title edits, reordering, and newly-added deals.
   const anno = new Map<string, string[]>();
   if (annoCols.length) {
     const startCol = ATTR.length + periods.length;
     try {
-      const old = await getValues(token, spreadsheetId, `${target.title}!A1:${colA1(width - 1)}400`);
+      const old = await getValuesFormula(token, spreadsheetId, `${target.title}!A1:${colA1(width - 1)}400`);
       for (const row of old) {
-        const dt = (row[1] ?? "").toString().trim(); // Deal column
-        if (!dt) continue;
+        const dealCell = (row[1] ?? "").toString(); // Deal column (a =HYPERLINK formula for deal rows)
+        const m = /HYPERLINK\("([^"]+)"/i.exec(dealCell);
+        const key = (m?.[1] ?? dealCell).trim(); // stable deal URL when hyperlinked, else the plain title
+        if (!key) continue;
         const vals = annoCols.map((_c, i) => (row[startCol + i] ?? "").toString());
-        if (vals.some((v) => v.trim())) anno.set(dt, vals);
+        if (vals.some((v) => v.trim())) anno.set(key, vals);
       }
     } catch {
       /* first render / empty tab */
     }
   }
-  const annoFor = (dealTitle: string) => anno.get(dealTitle) ?? annoCols.map(() => "");
+  const annoFor = (d: DealAgg) => anno.get(d.dealUrl) ?? anno.get(d.dealTitle) ?? annoCols.map(() => "");
 
   const grid: (string | number)[][] = [[...ATTR, ...periods, ...annoCols]];
   const partnerRows: number[] = [];
@@ -341,7 +344,7 @@ export async function renderPartnerClientView(
       clientRows.push(grid.length - 1);
       for (const d of byPartner.get(p)!.get(c)!.sort((x, y) => y.probability - x.probability || x.dealTitle.localeCompare(y.dealTitle))) {
         const bp = dealByPeriod(d, periods, periodOf);
-        grid.push([d.probability, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0)), ...annoFor(d.dealTitle)]);
+        grid.push([d.probability, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0)), ...annoFor(d)]);
       }
     }
     if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
