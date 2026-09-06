@@ -82,6 +82,7 @@ const BLACK = { red: 0, green: 0, blue: 0 };
 const WHITE = { red: 1, green: 1, blue: 1 };
 const GREY_TEXT = { red: 0.6, green: 0.6, blue: 0.6 };
 const ZERO_GREY = { red: 0.85098039, green: 0.85098039, blue: 0.85098039 }; // #d9d9d9 — muted text for $0 deal cells
+const SUMMARY_BG = { red: 0.9372549, green: 0.9372549, blue: 0.9372549 }; // #efefef — calculated/summary rows
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
 /** Per-probability header colors for the By Stage views (Google "light 3" palette). */
@@ -129,7 +130,7 @@ async function writeOutline(
     attrWidths: number[]; // pixel width per attribute column (0..firstPeriodCol-1)
     periodWidth: number; // pixel width for every period column
     headerRowIndex?: number; // 0-based grid row of the header (default 0); rows above it are summary/top rows
-    greyRows?: { start: number; end: number }; // rows whose Contract-Format col gets grey text (default: all data rows)
+    greyRows?: { start: number; end: number }[]; // row ranges whose Contract-Format col gets grey text (default: all data rows)
   },
 ): Promise<void> {
   const { sheetId, title } = target;
@@ -185,14 +186,15 @@ async function writeOutline(
   for (const r of opts.blackRows) reqs.push(setBg(sheetId, r, opts.width, BLACK, WHITE));
   for (const c of opts.coloredRows) reqs.push(setBg(sheetId, c.row, opts.width, c.bg));
   // Grey text on the Contract Format column (last attribute col) for deal rows only.
-  const grey = opts.greyRows ?? { start: hr + 1, end: grid.length };
-  reqs.push({
-    repeatCell: {
-      range: { sheetId, startRowIndex: grey.start, endRowIndex: grey.end, startColumnIndex: opts.firstPeriodCol - 1, endColumnIndex: opts.firstPeriodCol },
-      cell: { userEnteredFormat: { textFormat: { foregroundColor: GREY_TEXT } } },
-      fields: "userEnteredFormat.textFormat.foregroundColor",
-    },
-  });
+  const greys = opts.greyRows ?? [{ start: hr + 1, end: grid.length }];
+  for (const grey of greys)
+    reqs.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: grey.start, endRowIndex: grey.end, startColumnIndex: opts.firstPeriodCol - 1, endColumnIndex: opts.firstPeriodCol },
+        cell: { userEnteredFormat: { textFormat: { foregroundColor: GREY_TEXT } } },
+        fields: "userEnteredFormat.textFormat.foregroundColor",
+      },
+    });
   for (const g of opts.groups) reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
   // Column widths (baked from the hand-tuned tabs): attribute cols individually, period cols uniform.
   opts.attrWidths.forEach((px, i) =>
@@ -212,7 +214,7 @@ async function writeOutline(
     addConditionalFormatRule: {
       index: 0,
       rule: {
-        ranges: [{ sheetId, startRowIndex: hr + 1, endRowIndex: grid.length, startColumnIndex: opts.firstPeriodCol, endColumnIndex: opts.width }],
+        ranges: [{ sheetId, startRowIndex: 0, endRowIndex: 1000, startColumnIndex: 0, endColumnIndex: 26 }], // A:Z, every cell
         booleanRule: { condition: { type: "NUMBER_EQ", values: [{ userEnteredValue: "0" }] }, format: { textFormat: { foregroundColor: ZERO_GREY } } },
       },
     },
@@ -308,40 +310,45 @@ export async function renderProbabilityView(
   }
   const dealStages = [...byProb.keys()].sort((a, b) => b - a);
 
-  // --- Pass 1: 1-based sheet-row positions, so the Summary formulas can reference deal ranges. ---
+  // Stages to render, high → low: probability tiers present in the deals, unioned with the cascade
+  // tiers so the summary still cascades 100→0 even if a tier has no deals.
+  const orderedStages = [...new Set([...CASCADE_STAGES, ...dealStages])].sort((a, b) => b - a);
+
+  // --- Pass 1: 1-based sheet rows. Each stage is [header + deals] immediately followed by its OWN
+  // summary rows, so cascade formulas (which reference the prior tier's rows) still resolve above. ---
   const headerRow = (showSummary ? 3 : 0) + 1; // rows 1-2 = Weighted Value/Target, 3 = blank
   let cur = headerRow + 1;
   const dealPos = new Map<number, { start: number; end: number }>();
-  for (const s of dealStages) {
-    cur += 1; // stage header row
-    const start = cur;
-    cur += byProb.get(s)!.length;
-    dealPos.set(s, { start, end: cur - 1 });
-  }
   // 100% is consolidated to 2 rows (Gap to Target, Weighted Total=SUM); lower stages keep 4.
   // `outGap` = the row a lower stage references as its incoming gap (100%→its Gap row; else→Weighted Gap row).
   type SumRow = { gap: number; wt: number; total?: number; wgap?: number; outGap: number };
   const sumPos = new Map<number, SumRow>();
-  if (showSummary) {
-    cur += 2; // blank + "Summary" title
-    CASCADE_STAGES.forEach((s, si) => {
-      if (si === 0) {
+  for (const s of orderedStages) {
+    const n = byProb.get(s)?.length ?? 0;
+    if (n > 0) {
+      cur += 1; // stage header row
+      dealPos.set(s, { start: cur, end: cur + n - 1 });
+      cur += n;
+    }
+    if (showSummary && CASCADE_STAGES.includes(s)) {
+      if (CASCADE_STAGES.indexOf(s) === 0) {
         sumPos.set(s, { gap: cur, wt: cur + 1, outGap: cur });
         cur += 2;
       } else {
         sumPos.set(s, { gap: cur, total: cur + 1, wt: cur + 2, wgap: cur + 3, outGap: cur + 3 });
         cur += 4;
       }
-    });
+    }
   }
 
   // --- Pass 2: build the grid. Calculated cells are formulas referencing the rows above. ---
   const grid: (string | number)[][] = [];
   const coloredRows: ColoredRow[] = [];
   const groups: { start: number; end: number }[] = [];
+  const greyRanges: { start: number; end: number }[] = []; // grey Contract-Format on deal rows only (not summary labels)
 
   if (showSummary) {
-    const finalWt = sumPos.get(CASCADE_STAGES[CASCADE_STAGES.length - 1]!)!.wt; // 0% cumulative = total weighted
+    const finalWt = (sumPos.get(0) ?? sumPos.get(CASCADE_STAGES[CASCADE_STAGES.length - 1]!)!).wt; // 0% cumulative = total weighted
     const wv = blank();
     wv[labelCol] = "Weighted Value";
     periods.forEach((_q, i) => (wv[P0 + i] = `=${col(i)}${finalWt}`));
@@ -358,69 +365,65 @@ export async function renderProbabilityView(
   const headerRowIndex = grid.length;
   grid.push([...ATTR, ...periods]);
 
-  // Deal section: stage groups (probability desc), deals sorted by partner then title. Cells are raw $ values.
-  const dealStart = grid.length;
-  for (const s of dealStages) {
-    grid.push([`'${s}%`, ...Array(width - 1).fill("")]); // leading ' forces text
-    coloredRows.push({ row: grid.length - 1, bg: STAGE_COLORS[s] ?? GREEN });
-    const contentStart = grid.length;
-    for (const d of byProb.get(s)!.sort((x, y) => x.clientPartner.localeCompare(y.clientPartner) || x.dealTitle.localeCompare(y.dealTitle))) {
-      const bp = dealByPeriod(d, periods, periodOf);
-      grid.push([d.clientPartner, d.client, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
-    }
-    if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
-  }
-  const dealEnd = grid.length;
-
-  // Summary cascade: formulas so the math is auditable in-sheet (mirrors Current2; 100% consolidated to 2 rows).
-  if (showSummary) {
-    grid.push(blank());
-    const title = blank();
-    title[labelCol] = "Summary";
-    grid.push(title);
-    coloredRows.push({ row: grid.length - 1, bg: GRAY });
-    const sumDataStart = grid.length;
-    CASCADE_STAGES.forEach((s, si) => {
-      const sp = sumPos.get(s)!;
-      const prev = si > 0 ? sumPos.get(CASCADE_STAGES[si - 1]!)! : null;
-      const dp = dealPos.get(s);
-      const hasT = (i: number) => cascadeTargets!.get(periods[i]!) != null;
-      const sumCell = (i: number) => (dp ? `=SUM(${col(i)}${dp.start}:${col(i)}${dp.end})` : 0);
-
-      // Gap to Target — first row of each block, carries the stage %.
-      // 100%: its own Weighted Total − Target; lower stages: the prior block's outgoing gap.
-      const gapRow = blank();
-      gapRow[labelCol - 1] = `'${s}%`;
-      gapRow[labelCol] = "Gap to Target";
-      periods.forEach((_q, i) => {
-        const c = col(i);
-        gapRow[P0 + i] = !hasT(i) ? "" : si === 0 ? `=${c}${sp.wt}-${c}$${TARGET_ROW}` : `=${c}${prev!.outGap}`;
-      });
-      grid.push(gapRow);
+  // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
+  for (const s of orderedStages) {
+    const stageDeals = byProb.get(s) ?? [];
+    if (stageDeals.length) {
+      grid.push([`'${s}%`, ...Array(width - 1).fill("")]); // leading ' forces text
       coloredRows.push({ row: grid.length - 1, bg: STAGE_COLORS[s] ?? GREEN });
-
-      if (si === 0) {
-        // 100%: Weighted Total = committed gross (weighted == gross → no separate Total / Weighted-Gap rows).
-        const wtRow = blank();
-        wtRow[labelCol] = "Weighted Total";
-        periods.forEach((_q, i) => (wtRow[P0 + i] = sumCell(i)));
-        grid.push(wtRow);
-      } else {
-        const totRow = blank();
-        totRow[labelCol] = "Total at Prob"; // this stage's gross
-        periods.forEach((_q, i) => (totRow[P0 + i] = sumCell(i)));
-        grid.push(totRow);
-        const wtRow = blank();
-        wtRow[labelCol] = "Weighted Total"; // cumulative: this stage weighted + higher stages
-        periods.forEach((_q, i) => (wtRow[P0 + i] = `=(${col(i)}${sp.total!}*${s / 100})+${col(i)}${prev!.wt}`));
-        grid.push(wtRow);
-        const wgRow = blank();
-        wgRow[labelCol] = "Weighted Gap to Target"; // cumulative weighted − target
-        periods.forEach((_q, i) => (wgRow[P0 + i] = hasT(i) ? `=${col(i)}${sp.wt}-${col(i)}$${TARGET_ROW}` : ""));
-        grid.push(wgRow);
+      const contentStart = grid.length;
+      for (const d of stageDeals.sort((x, y) => x.clientPartner.localeCompare(y.clientPartner) || x.dealTitle.localeCompare(y.dealTitle))) {
+        const bp = dealByPeriod(d, periods, periodOf);
+        grid.push([d.clientPartner, d.client, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
       }
+      groups.push({ start: contentStart, end: grid.length }); // collapse deals; the stage's summary stays visible below
+      greyRanges.push({ start: contentStart, end: grid.length });
+    }
+
+    if (!showSummary || !CASCADE_STAGES.includes(s)) continue;
+    // Inline summary for this tier (mirrors Current2; 100% consolidated to 2 rows, lower tiers 4).
+    const si = CASCADE_STAGES.indexOf(s);
+    const sp = sumPos.get(s)!;
+    const prev = si > 0 ? sumPos.get(CASCADE_STAGES[si - 1]!)! : null;
+    const dp = dealPos.get(s);
+    const hasT = (i: number) => cascadeTargets!.get(periods[i]!) != null;
+    const sumCell = (i: number) => (dp ? `=SUM(${col(i)}${dp.start}:${col(i)}${dp.end})` : 0);
+
+    // Gap to Target — first summary row, carries the stage %. 100%: own Weighted Total − Target;
+    // lower tiers: the prior tier's outgoing gap (the cascade).
+    const gapRow = blank();
+    gapRow[labelCol - 1] = `'${s}%`;
+    gapRow[labelCol] = "Gap to Target";
+    periods.forEach((_q, i) => {
+      const c = col(i);
+      gapRow[P0 + i] = !hasT(i) ? "" : si === 0 ? `=${c}${sp.wt}-${c}$${TARGET_ROW}` : `=${c}${prev!.outGap}`;
     });
-    groups.push({ start: sumDataStart, end: grid.length }); // collapsible summary block (rows 65–86)
+    grid.push(gapRow);
+    coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+
+    if (si === 0) {
+      const wtRow = blank();
+      wtRow[labelCol] = "Weighted Total"; // committed gross (weighted == gross at 100%)
+      periods.forEach((_q, i) => (wtRow[P0 + i] = sumCell(i)));
+      grid.push(wtRow);
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+    } else {
+      const totRow = blank();
+      totRow[labelCol] = "Total at Prob"; // this tier's gross
+      periods.forEach((_q, i) => (totRow[P0 + i] = sumCell(i)));
+      grid.push(totRow);
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+      const wtRow = blank();
+      wtRow[labelCol] = "Weighted Total"; // cumulative: this tier weighted + higher tiers
+      periods.forEach((_q, i) => (wtRow[P0 + i] = `=(${col(i)}${sp.total!}*${s / 100})+${col(i)}${prev!.wt}`));
+      grid.push(wtRow);
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+      const wgRow = blank();
+      wgRow[labelCol] = "Weighted Gap to Target"; // cumulative weighted − target
+      periods.forEach((_q, i) => (wgRow[P0 + i] = hasT(i) ? `=${col(i)}${sp.wt}-${col(i)}$${TARGET_ROW}` : ""));
+      grid.push(wgRow);
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+    }
   }
 
   await writeOutline(token, spreadsheetId, target, grid, {
@@ -433,7 +436,7 @@ export async function renderProbabilityView(
     attrWidths: widths.attr,
     periodWidth: widths.period,
     headerRowIndex,
-    greyRows: { start: dealStart, end: dealEnd },
+    greyRows: greyRanges,
   });
 }
 

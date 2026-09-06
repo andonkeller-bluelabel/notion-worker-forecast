@@ -26,6 +26,11 @@ worker.webhook("inspectSheet", {
     console.log(`[inspect] colWidths=${JSON.stringify(await getColumnWidths(token, sheetId, TAB))}`);
     console.log(`[inspect] rowGroups=${JSON.stringify(s?.rowGroups)}`);
     console.log(`[inspect] merges=${JSON.stringify(s?.merges)}`);
+    console.log(`[inspect] conditionalFormats=${JSON.stringify((s as { conditionalFormats?: unknown })?.conditionalFormats)}`);
+    if (process.env.INSPECT_FMT_RANGE) {
+      const fmt = await getCellFormat(token, sheetId, process.env.INSPECT_FMT_RANGE);
+      console.log(`[inspect] cellFormat=${JSON.stringify(fmt)}`);
+    }
     // Full grid (labels + all period columns), tall enough to include the total row.
     const vals = await getValues(token, sheetId, `${TAB}!A1:P160`);
     console.log(`[inspect] grid=${JSON.stringify(vals)}`);
