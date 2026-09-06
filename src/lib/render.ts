@@ -284,6 +284,11 @@ async function writeOutline(
   await batchUpdate(token, spreadsheetId, reqs);
 }
 
+/** Annotation columns on the Client Partner view. Weekly rollover shifts ACTIONS_COL → LAST_WEEK_COL. */
+export const ACTIONS_COL = "Actions to Grow";
+export const LAST_WEEK_COL = "Last Week's Actions";
+export const REVENUE_COL = "Revenue Changes";
+
 /** "By Client": Probability | Deal | Contract Format | <periods>. Groups: Client Partner → Client. */
 export async function renderPartnerClientView(
   token: string,
@@ -294,32 +299,46 @@ export async function renderPartnerClientView(
   periodOf: (m: string) => string,
   widths: { attr: number[]; period: number },
   extras?: { annotationCols: string[]; annotationWidths: number[]; visiblePeriods: string[] },
+  rollover = false, // weekly rollover: shift "Actions to Grow" → "Last Week's Actions", then clear it
 ): Promise<void> {
   const ATTR = ["Probability", "Deal", "Contract Format"];
   const annoCols = extras?.annotationCols ?? [];
   const width = ATTR.length + periods.length + annoCols.length;
   const blanks = () => Array(width - 1).fill("");
 
-  // Preserve the free-text annotation columns across renders. Key by the deal's stable ID (embedded in
-  // the Deal cell's HYPERLINK URL) so notes survive title edits, reordering, and newly-added deals.
-  const anno = new Map<string, string[]>();
+  // Preserve the free-text annotation columns across renders, keyed by the deal's stable ID (from the
+  // Deal HYPERLINK URL) and matched by column NAME (so adding/reordering columns doesn't shift values).
+  const anno = new Map<string, Record<string, string>>();
   if (annoCols.length) {
-    const startCol = ATTR.length + periods.length;
     try {
       const old = await getValuesFormula(token, spreadsheetId, `${target.title}!A1:${colA1(width - 1)}400`);
-      for (const row of old) {
+      const oldHdr = (old[0] ?? []).map((h) => (h ?? "").toString().trim());
+      for (const row of old.slice(1)) {
         const dealCell = (row[1] ?? "").toString(); // Deal column (a =HYPERLINK formula for deal rows)
         const m = /HYPERLINK\("([^"]+)"/i.exec(dealCell);
         const key = (m?.[1] ?? dealCell).trim(); // stable deal URL when hyperlinked, else the plain title
         if (!key) continue;
-        const vals = annoCols.map((_c, i) => (row[startCol + i] ?? "").toString());
-        if (vals.some((v) => v.trim())) anno.set(key, vals);
+        const rec: Record<string, string> = {};
+        let any = false;
+        for (const name of annoCols) {
+          const idx = oldHdr.indexOf(name);
+          const v = idx >= 0 ? (row[idx] ?? "").toString() : "";
+          if (v.trim()) any = true;
+          rec[name] = v;
+        }
+        if (any) anno.set(key, rec);
       }
     } catch {
       /* first render / empty tab */
     }
   }
-  const annoFor = (d: DealAgg) => anno.get(d.dealUrl) ?? anno.get(d.dealTitle) ?? annoCols.map(() => "");
+  // On rollover: this week's Actions to Grow becomes Last Week's Actions, and Actions to Grow clears.
+  const annoFor = (d: DealAgg): string[] => {
+    const rec = anno.get(d.dealUrl) ?? anno.get(d.dealTitle) ?? {};
+    return annoCols.map((name) =>
+      rollover && name === LAST_WEEK_COL ? rec[ACTIONS_COL] ?? "" : rollover && name === ACTIONS_COL ? "" : rec[name] ?? "",
+    );
+  };
 
   const grid: (string | number)[][] = [[...ATTR, ...periods, ...annoCols]];
   const partnerRows: number[] = [];

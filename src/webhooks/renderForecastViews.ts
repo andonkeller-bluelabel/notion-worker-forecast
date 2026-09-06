@@ -10,7 +10,7 @@
 
 import { worker, googleAuth } from "../worker.js";
 import { readSegments, readTargets } from "../lib/notionForecast.js";
-import { aggregateDeals, renderPartnerClientView, renderProbabilityView, renderWeightedPipeline, type Target } from "../lib/render.js";
+import { aggregateDeals, renderPartnerClientView, renderProbabilityView, renderWeightedPipeline, ACTIONS_COL, LAST_WEEK_COL, REVENUE_COL, type Target } from "../lib/render.js";
 import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
 import { deleteTabs, deleteTabsById, getSheetMeta, ensureTab } from "../lib/sheets.js";
 import { postForecastOps } from "../lib/slack.js";
@@ -56,10 +56,12 @@ worker.webhook("renderForecastViews", {
         const curQ = monthToQuarter(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`);
         const ci = quarters.indexOf(curQ);
         const clientExtras = {
-          annotationCols: ["Actions to Grow", "Revenue Changes"],
-          annotationWidths: [248, 248],
+          annotationCols: [ACTIONS_COL, LAST_WEEK_COL, REVENUE_COL],
+          annotationWidths: [248, 248, 248],
           visiblePeriods: ci >= 0 ? quarters.slice(ci, ci + 4) : quarters.slice(0, 4),
         };
+        // Weekly rollover (triggered via {"rollover":true} payload): shift Actions to Grow → Last Week's Actions.
+        const rollover = (_event as { body?: Record<string, unknown> }).body?.rollover === true;
         // Monthly headers use the "2026.09" dot form (matching the "2026.Qx" quarters);
         // monthLabel converts a byMonth key ("2026-09") to the same, so lookups still match.
         const monthLabel = (m: string) => m.replace("-", ".");
@@ -72,13 +74,13 @@ worker.webhook("renderForecastViews", {
           return title ? { sheetId: id, title } : { sheetId: await ensureTab(token, sheetId, canonical), title: canonical };
         };
 
-        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client Partner"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras);
+        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client Partner"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras, rollover);
         await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline"), deals, quarters, monthToQuarter, PIPELINE_W, targets, clientExtras.visiblePeriods);
         await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);
         await deleteTabsById(token, sheetId, ORPHAN_TAB_IDS);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
 
-        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → Client Partner, Pipeline, Weighted Monthly.`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {
