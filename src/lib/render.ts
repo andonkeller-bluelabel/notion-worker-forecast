@@ -446,7 +446,12 @@ export async function renderProbabilityView(
     const qtg = blank();
     qtg[labelCol] = "QoQ Target Growth";
     periods.forEach((_q, i) => {
-      if (i > 0) qtg[P0 + i] = `=(${col(i)}${TARGET_ROW}-${col(i - 1)}${TARGET_ROW})/${col(i - 1)}${TARGET_ROW}`;
+      if (i > 0) {
+        const c = col(i);
+        const p = col(i - 1);
+        // Blank when either quarter has no target (avoids #DIV/0! and a misleading −100% past the last target).
+        qtg[P0 + i] = `=IF(OR(${c}${TARGET_ROW}="",${p}${TARGET_ROW}=""),"",(${c}${TARGET_ROW}-${p}${TARGET_ROW})/${p}${TARGET_ROW})`;
+      }
     });
     grid.push(qtg);
     // r4: Weighted Value = grand cumulative weighted (0% Weighted Total).
