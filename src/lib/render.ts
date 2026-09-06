@@ -6,7 +6,7 @@
  * period columns (quarters or months). Cells show RAW (unweighted) revenue.
  */
 
-import { batchUpdate, getSheetStructure, writeValues, clearValues } from "./sheets.js";
+import { batchUpdate, getSheetStructure, writeValues, clearValues, getValues } from "./sheets.js";
 import { spreadSegment, type Segment } from "./forecast.js";
 import { CASCADE_STAGES } from "./coverage.js";
 
@@ -84,6 +84,7 @@ const GREY_TEXT = { red: 0.6, green: 0.6, blue: 0.6 };
 const ZERO_GREY = { red: 0.85098039, green: 0.85098039, blue: 0.85098039 }; // #d9d9d9 — muted text for $0 deal cells
 const SUMMARY_BG = { red: 0.9372549, green: 0.9372549, blue: 0.9372549 }; // #efefef — calculated/summary rows
 const NEG_RED = { red: 0.6509804, green: 0.10980392, blue: 0 }; // #a61c00 — negative-number text
+const GREY_ROW_TEXT = { red: 0.4, green: 0.4, blue: 0.4 }; // #666666 — text color for the grey (calculated) rows
 const ACCOUNTING = '_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)';
 
 /** Per-probability header colors for the By Stage views (Google "light 3" palette). */
@@ -100,7 +101,7 @@ const STAGE_COLORS: Record<number, unknown> = {
   0: LIGHT_MAGENTA,
 };
 
-type ColoredRow = { row: number; bg: unknown };
+type ColoredRow = { row: number; bg: unknown; fg?: unknown };
 
 function setBg(sheetId: number, row: number, cols: number, bg: unknown, fg?: unknown) {
   return {
@@ -134,6 +135,9 @@ async function writeOutline(
     greyRows?: { start: number; end: number }[]; // row ranges whose Contract-Format col gets grey text (default: all data rows)
     percentRows?: number[]; // rows whose period cells get 0% format (e.g. QoQ growth)
     boldRows?: number[]; // rows rendered bold across all columns
+    hideCols?: number[]; // column indices to hide (hiddenByUser)
+    colWidths?: number[]; // explicit per-column pixel widths (overrides attrWidths/periodWidth when given)
+    wrapCols?: number[]; // column indices whose cells wrap text
   },
 ): Promise<void> {
   const { sheetId, title } = target;
@@ -196,7 +200,7 @@ async function writeOutline(
     });
   reqs.push(setBg(sheetId, hr, opts.width, GRAY)); // header
   for (const r of opts.blackRows) reqs.push(setBg(sheetId, r, opts.width, BLACK, WHITE));
-  for (const c of opts.coloredRows) reqs.push(setBg(sheetId, c.row, opts.width, c.bg));
+  for (const c of opts.coloredRows) reqs.push(setBg(sheetId, c.row, opts.width, c.bg, c.fg));
   for (const r of opts.boldRows ?? [])
     reqs.push({
       repeatCell: {
@@ -217,18 +221,32 @@ async function writeOutline(
     });
   for (const g of opts.groups) reqs.push({ addDimensionGroup: { range: { sheetId, dimension: "ROWS", startIndex: g.start, endIndex: g.end } } });
   // Column widths (baked from the hand-tuned tabs): attribute cols individually, period cols uniform.
-  opts.attrWidths.forEach((px, i) =>
+  if (opts.colWidths) {
+    opts.colWidths.forEach((px, i) =>
+      reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: "pixelSize" } }),
+    );
+  } else {
+    opts.attrWidths.forEach((px, i) =>
+      reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: "pixelSize" } }),
+    );
     reqs.push({
-      updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: "pixelSize" },
-    }),
-  );
-  reqs.push({
-    updateDimensionProperties: {
-      range: { sheetId, dimension: "COLUMNS", startIndex: opts.firstPeriodCol, endIndex: opts.width },
-      properties: { pixelSize: opts.periodWidth },
-      fields: "pixelSize",
-    },
-  });
+      updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: opts.firstPeriodCol, endIndex: opts.width }, properties: { pixelSize: opts.periodWidth }, fields: "pixelSize" },
+    });
+  }
+  for (const c of opts.wrapCols ?? [])
+    reqs.push({
+      repeatCell: {
+        range: { sheetId, startColumnIndex: c, endColumnIndex: c + 1 },
+        cell: { userEnteredFormat: { wrapStrategy: "WRAP" } },
+        fields: "userEnteredFormat.wrapStrategy",
+      },
+    });
+  // Column visibility: unhide everything, then hide the requested columns — idempotent as the window shifts.
+  if (opts.hideCols) {
+    reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: Math.max(opts.width, 26) }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } });
+    for (const c of opts.hideCols)
+      reqs.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: c, endIndex: c + 1 }, properties: { hiddenByUser: true }, fields: "hiddenByUser" } });
+  }
   // Conditional format: muted grey text on $0 deal cells (blank group-row cells aren't numbers, so untouched).
   reqs.push({
     addConditionalFormatRule: {
@@ -261,11 +279,32 @@ export async function renderPartnerClientView(
   periods: string[],
   periodOf: (m: string) => string,
   widths: { attr: number[]; period: number },
+  extras?: { annotationCols: string[]; annotationWidths: number[]; visiblePeriods: string[] },
 ): Promise<void> {
   const ATTR = ["Probability", "Deal", "Contract Format"];
-  const width = ATTR.length + periods.length;
+  const annoCols = extras?.annotationCols ?? [];
+  const width = ATTR.length + periods.length + annoCols.length;
   const blanks = () => Array(width - 1).fill("");
-  const grid: (string | number)[][] = [[...ATTR, ...periods]];
+
+  // Preserve the free-text annotation columns across renders, keyed by deal title (survives reordering).
+  const anno = new Map<string, string[]>();
+  if (annoCols.length) {
+    const startCol = ATTR.length + periods.length;
+    try {
+      const old = await getValues(token, spreadsheetId, `${target.title}!A1:${colA1(width - 1)}400`);
+      for (const row of old) {
+        const dt = (row[1] ?? "").toString().trim(); // Deal column
+        if (!dt) continue;
+        const vals = annoCols.map((_c, i) => (row[startCol + i] ?? "").toString());
+        if (vals.some((v) => v.trim())) anno.set(dt, vals);
+      }
+    } catch {
+      /* first render / empty tab */
+    }
+  }
+  const annoFor = (dealTitle: string) => anno.get(dealTitle) ?? annoCols.map(() => "");
+
+  const grid: (string | number)[][] = [[...ATTR, ...periods, ...annoCols]];
   const partnerRows: number[] = [];
   const clientRows: number[] = [];
   const groups: { start: number; end: number }[] = [];
@@ -288,11 +327,18 @@ export async function renderPartnerClientView(
       clientRows.push(grid.length - 1);
       for (const d of byPartner.get(p)!.get(c)!.sort((x, y) => y.probability - x.probability || x.dealTitle.localeCompare(y.dealTitle))) {
         const bp = dealByPeriod(d, periods, periodOf);
-        grid.push([d.probability, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0))]);
+        grid.push([d.probability, HYPERLINK(d.dealUrl, d.dealTitle), d.contractType, ...periods.map((pp) => Math.round(bp.get(pp) ?? 0)), ...annoFor(d.dealTitle)]);
       }
     }
     if (grid.length > contentStart) groups.push({ start: contentStart, end: grid.length });
   }
+
+  // Hide period columns outside the visible window; explicit per-column widths cover the annotation cols.
+  const visible = new Set(extras?.visiblePeriods ?? periods);
+  const hideCols = extras ? periods.map((q, i) => (visible.has(q) ? -1 : ATTR.length + i)).filter((c) => c >= 0) : undefined;
+  const colWidths = extras ? [...widths.attr, ...periods.map(() => widths.period), ...extras.annotationWidths] : undefined;
+  const wrapCols = extras ? annoCols.map((_c, i) => ATTR.length + periods.length + i) : undefined;
+
   await writeOutline(token, spreadsheetId, target, grid, {
     width,
     frozenCols: 3,
@@ -303,6 +349,9 @@ export async function renderPartnerClientView(
     groups,
     attrWidths: widths.attr,
     periodWidth: widths.period,
+    hideCols,
+    colWidths,
+    wrapCols,
   });
 }
 
@@ -417,7 +466,7 @@ export async function renderProbabilityView(
   const headerRowIndex = grid.length;
   grid.push([...ATTR, ...periods]);
   // Top block (quarter labels → header) gets the #efefef summary background.
-  if (showSummary) for (let r = 0; r <= headerRowIndex; r++) coloredRows.push({ row: r, bg: SUMMARY_BG });
+  if (showSummary) for (let r = 0; r <= headerRowIndex; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
 
   // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
   for (const s of orderedStages) {
@@ -453,30 +502,30 @@ export async function renderProbabilityView(
       gapRow[P0 + i] = !hasT(i) ? "" : si === 0 ? `=${c}${sp.wt}-${c}$${TARGET_ROW}` : `=${c}${prev!.outGap}`;
     });
     grid.push(gapRow);
-    coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+    coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
 
     if (si === 0) {
       const wtRow = blank();
       wtRow[labelCol] = "Weighted Total"; // committed gross (weighted == gross at 100%)
       periods.forEach((_q, i) => (wtRow[P0 + i] = sumCell(i)));
       grid.push(wtRow);
-      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
     } else {
       const totRow = blank();
       totRow[labelCol] = "Total at Prob"; // this tier's gross
       periods.forEach((_q, i) => (totRow[P0 + i] = sumCell(i)));
       grid.push(totRow);
-      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
       const wtRow = blank();
       wtRow[labelCol] = "Weighted Total"; // cumulative: this tier weighted + higher tiers
       periods.forEach((_q, i) => (wtRow[P0 + i] = `=(${col(i)}${sp.total!}*${s / 100})+${col(i)}${prev!.wt}`));
       grid.push(wtRow);
-      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
       const wgRow = blank();
       wgRow[labelCol] = "Weighted Gap to Target"; // cumulative weighted − target
       periods.forEach((_q, i) => (wgRow[P0 + i] = hasT(i) ? `=${col(i)}${sp.wt}-${col(i)}$${TARGET_ROW}` : ""));
       grid.push(wgRow);
-      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG });
+      coloredRows.push({ row: grid.length - 1, bg: SUMMARY_BG, fg: GREY_ROW_TEXT });
     }
   }
 

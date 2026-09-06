@@ -24,6 +24,17 @@ worker.webhook("inspectSheet", {
     console.log(`[inspect] TAB="${TAB}"`);
     console.log(`[inspect] gridProperties=${JSON.stringify(s?.properties?.gridProperties)}`);
     console.log(`[inspect] colWidths=${JSON.stringify(await getColumnWidths(token, sheetId, TAB))}`);
+    {
+      const cmUrl =
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}?ranges=${encodeURIComponent(`${TAB}!A1:BA1`)}` +
+        `&fields=${encodeURIComponent("sheets(properties(gridProperties(columnCount)),data(columnMetadata(pixelSize,hiddenByUser)))")}`;
+      const cm = (await (await fetch(cmUrl, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } })).json()) as {
+        sheets?: { properties?: { gridProperties?: { columnCount?: number } }; data?: { columnMetadata?: { pixelSize?: number; hiddenByUser?: boolean }[] }[] }[];
+      };
+      const md = cm.sheets?.[0]?.data?.[0]?.columnMetadata ?? [];
+      const hidden = md.map((c, i) => (c.hiddenByUser ? String.fromCharCode(65 + i) : "")).filter(Boolean);
+      console.log(`[inspect] columnCount=${cm.sheets?.[0]?.properties?.gridProperties?.columnCount} hiddenCols=${JSON.stringify(hidden)}`);
+    }
     console.log(`[inspect] rowGroups=${JSON.stringify(s?.rowGroups)}`);
     console.log(`[inspect] merges=${JSON.stringify(s?.merges)}`);
     console.log(`[inspect] conditionalFormats=${JSON.stringify((s as { conditionalFormats?: unknown })?.conditionalFormats)}`);

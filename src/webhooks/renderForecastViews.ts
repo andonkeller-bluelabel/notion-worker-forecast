@@ -54,6 +54,15 @@ worker.webhook("renderForecastViews", {
         const targets = await readTargets(notion);
 
         const quarters = quartersRange();
+        // Client View: free-text annotation columns (preserved by deal) + only the current quarter and next 3 visible.
+        const now = new Date();
+        const curQ = monthToQuarter(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`);
+        const ci = quarters.indexOf(curQ);
+        const clientExtras = {
+          annotationCols: ["Actions to Grow", "Revenue Changes"],
+          annotationWidths: [248, 248],
+          visiblePeriods: ci >= 0 ? quarters.slice(ci, ci + 4) : quarters.slice(0, 4),
+        };
         // Monthly headers use the "2026.09" dot form (matching the "2026.Qx" quarters);
         // monthLabel converts a byMonth key ("2026-09") to the same, so lookups still match.
         const monthLabel = (m: string) => m.replace("-", ".");
@@ -66,7 +75,7 @@ worker.webhook("renderForecastViews", {
           return title ? { sheetId: id, title } : { sheetId: await ensureTab(token, sheetId, canonical), title: canonical };
         };
 
-        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client View"), deals, quarters, monthToQuarter, CLIENT_W);
+        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client View"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras);
         await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientMonthly, "Client Monthly"), deals, months, monthLabel, CLIENT_MONTHLY_W);
         await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline View"), deals, quarters, monthToQuarter, PIPELINE_W, targets);
         await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineMonthly, "Pipeline Monthly"), deals, months, monthLabel, PIPELINE_MONTHLY_W);
