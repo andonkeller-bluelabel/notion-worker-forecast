@@ -13,6 +13,7 @@ import { readSegments, readTargets } from "../lib/notionForecast.js";
 import { aggregateDeals, renderPartnerClientView, renderProbabilityView, renderWeightedPipeline, ACTIONS_COL, LAST_WEEK_COL, REVENUE_COL, type Target } from "../lib/render.js";
 import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
 import { deleteTabs, deleteTabsById, getSheetMeta, ensureTab } from "../lib/sheets.js";
+import { withSheetsAuthRetry, acquireRenderLock, releaseRenderLock } from "../lib/renderGuard.js";
 import { postForecastOps } from "../lib/slack.js";
 
 /** Stable sheetIds of the three view tabs we keep. We render by ID so renames never recreate them. */
@@ -44,10 +45,46 @@ worker.webhook("renderForecastViews", {
   execute: async (events, { notion }) => {
     for (const _event of events) {
       const sheetId = process.env.FORECAST_SHEET_ID;
+      // Weekly rollover (triggered via {"rollover":true} payload): shift Actions to Grow → Last Week's Actions.
+      const rollover = (_event as { body?: Record<string, unknown> }).body?.rollover === true;
+      let dealCount = 0;
+      let skipped = false;
       try {
         if (!sheetId) throw new Error("FORECAST_SHEET_ID not set");
-        const token = await googleAuth.accessToken();
+        // On a transient Sheets 401 (token blip), refresh the token and replay the whole render once.
+        await withSheetsAuthRetry(
+          () => googleAuth.accessToken(),
+          async (token) => {
+            // Concurrency guard: if a teammate's render is already in flight, skip — theirs writes
+            // the same output, so rendering on top of it only risks interleaved writes.
+            if (!(await acquireRenderLock(token, sheetId))) {
+              skipped = true;
+              return;
+            }
+            try {
+              await renderAll(token, sheetId, notion, rollover);
+            } finally {
+              await releaseRenderLock(token, sheetId);
+            }
+          },
+        );
+        if (skipped) {
+          console.log("[forecast] render skipped — another render is already in flight");
+          continue;
+        }
+        const msg = `:page_facing_up: *Forecast views rendered* — ${dealCount} deals → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
+        console.log(`[forecast] ${msg}`);
+        await postForecastOps(msg);
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        console.error("[forecast] render failed:", err);
+        await postForecastOps(`:x: *Forecast view render failed*: ${m}`);
+      }
+
+      // The render itself, factored out so the auth-retry wrapper can replay it with a fresh token.
+      async function renderAll(token: string, sheetId: string, notion: Parameters<typeof readSegments>[0], rollover: boolean): Promise<void> {
         const deals = aggregateDeals(await readSegments(notion));
+        dealCount = deals.length;
         const targets = await readTargets(notion);
 
         const quarters = quartersRange();
@@ -60,8 +97,6 @@ worker.webhook("renderForecastViews", {
           annotationWidths: [248, 248, 248],
           visiblePeriods: ci >= 0 ? quarters.slice(ci, ci + 4) : quarters.slice(0, 4),
         };
-        // Weekly rollover (triggered via {"rollover":true} payload): shift Actions to Grow → Last Week's Actions.
-        const rollover = (_event as { body?: Record<string, unknown> }).body?.rollover === true;
         // Monthly headers use the "2026.09" dot form (matching the "2026.Qx" quarters);
         // monthLabel converts a byMonth key ("2026-09") to the same, so lookups still match.
         const monthLabel = (m: string) => m.replace("-", ".");
@@ -79,14 +114,6 @@ worker.webhook("renderForecastViews", {
         await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);
         await deleteTabsById(token, sheetId, ORPHAN_TAB_IDS);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
-
-        const msg = `:page_facing_up: *Forecast views rendered* — ${deals.length} deals → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
-        console.log(`[forecast] ${msg}`);
-        await postForecastOps(msg);
-      } catch (err) {
-        const m = err instanceof Error ? err.message : String(err);
-        console.error("[forecast] render failed:", err);
-        await postForecastOps(`:x: *Forecast view render failed*: ${m}`);
       }
     }
   },
