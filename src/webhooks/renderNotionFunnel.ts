@@ -15,12 +15,13 @@ import { computeWindow } from "../lib/coverage.js";
 import { renderCoverageHtml } from "../lib/coverageHtml.js";
 import { computePlanRows } from "../lib/planVsPipeline.js";
 import { renderPlanHtml } from "../lib/planHtml.js";
-import { uploadHtml, replaceReportEmbeds } from "../lib/notionEmbed.js";
+import { uploadHtml, syncReportEmbeds } from "../lib/notionEmbed.js";
 import { postForecastOps } from "../lib/slack.js";
 
-/** Experimental Reporting page + the block the report embeds sit right after (the manual dashboard embed). */
+/** Experimental Reporting page. Each report's embed lives in its own draggable container (matched by filename). */
 const PAGE_ID = "3d24ed00807880f0aa20f33754e60b61";
-const ANCHOR_BLOCK_ID = "e977e4a1-01a6-46d2-a4ac-a1deae2ffba3";
+const PLAN_FILE = "forecast_vs_plan.html";
+const COVERAGE_FILE = "pipeline_vs_target.html";
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
@@ -54,12 +55,18 @@ worker.webhook("renderNotionFunnel", {
         const fullW = computeWindow(deals, targets, full, `Through ${full[full.length - 1]}`);
         const htmlA = renderCoverageHtml([nearW, fullW], { asOf });
 
-        const [idB, idA] = [await uploadHtml(token, htmlB, "forecast_vs_plan.html"), await uploadHtml(token, htmlA, "pipeline_vs_target.html")];
-        const r = await replaceReportEmbeds(token, PAGE_ID, ANCHOR_BLOCK_ID, [idB, idA]);
+        // Swap each report's embed inside its own draggable container (matched by filename), so manual placement survives.
+        const idB = await uploadHtml(token, htmlB, PLAN_FILE);
+        const idA = await uploadHtml(token, htmlA, COVERAGE_FILE);
+        const r = await syncReportEmbeds(token, PAGE_ID, [
+          { filename: PLAN_FILE, fileUploadId: idB },
+          { filename: COVERAGE_FILE, fileUploadId: idA },
+        ]);
 
         const msg = `:bar_chart: *Notion reports updated* — Forecast vs Plan + Pipeline vs Target · near ${pct(nearW.coveredPct)} covered, gap ${(fullW.gap / 1e6).toFixed(1)}M.`;
-        console.log(`[forecast] ${msg} (blocks=${r.blockIds.join(",")} deletedOld=${r.deletedOld} usedAnchor=${r.usedAnchor})`);
-        await postForecastOps(msg + (r.usedAnchor ? "" : " :warning: anchor missing — appended at page end; check layout."));
+        const fresh = [...r.created, ...r.migrated];
+        console.log(`[forecast] ${msg} (updated=[${r.updated}] created=[${r.created}] migrated=[${r.migrated}] dupes=${r.deletedDupes})`);
+        await postForecastOps(msg + (fresh.length ? ` :information_source: new report card(s) added at the page end — drag into place once; future refreshes stay put.` : ""));
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         console.error("[forecast] notion reports failed:", err);

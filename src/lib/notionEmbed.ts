@@ -1,11 +1,19 @@
 /**
- * Push HTML into a Notion embed on a page via the integration token.
+ * Push HTML reports into Notion embeds that the user can freely drag around.
  *
- * Notion quirk: an `embed` block can be CREATED backed by a file_upload
- * (`embed.file_upload`), but it canNOT be UPDATED to a new file_upload (block
- * PATCH only accepts `embed.url`). And uploads are immutable. So each refresh =
- * upload a new file, delete the old funnel embed, and insert a fresh one at the
- * same spot (right after a stable anchor block). No cross-run state needed.
+ * Notion constraints (verified against API version 2026-03-11):
+ *   • An embed block can be CREATED backed by a file_upload, but NOT updated to a
+ *     new one (block PATCH rejects `embed.file_upload`), and uploads are immutable.
+ *   • append-children has no positional `after` — new blocks land at the parent's END.
+ * So "update" = upload a new file, make a new embed, drop the old one. Done naively
+ * (recreate as a page child) the embed jumps to the page bottom every refresh, undoing
+ * any manual placement.
+ *
+ * Fix: keep each report's embed inside its own **synced-block container**. We locate a
+ * report by the filename in its embed URL (wherever it now lives), then swap the embed
+ * by appending the fresh one to that CONTAINER and deleting the old inner embed. The
+ * container is never moved or recreated, so it stays exactly where the user dragged it.
+ * First run (or a bare legacy embed) creates the container at the page end — drag it once.
  */
 
 const NOTION = "https://api.notion.com/v1";
@@ -34,63 +42,89 @@ export async function uploadHtml(token: string, html: string, filename: string):
   return id;
 }
 
-export type ReplaceResult = { blockId: string; deletedOld: number; usedAnchor: boolean };
+type Block = { id: string; type: string; has_children?: boolean; embed?: { url?: string } };
+const embedChild = (fileUploadId: string) => ({ type: "embed", embed: { type: "file_upload", file_upload: { id: fileUploadId } } });
 
-/**
- * Replace the funnel embed: delete every embed positioned AFTER `anchorId` (the
- * previous funnel[s]) and append a fresh file-backed embed at the page end — which,
- * with the funnel as the last block, keeps it right after the anchor. The API
- * version doesn't support positional `after`, so we rely on append-at-end order.
- * If the anchor is missing we still append, but delete nothing (usedAnchor=false).
- */
-export async function replaceFunnelEmbed(token: string, pageId: string, anchorId: string, fileUploadId: string): Promise<ReplaceResult> {
-  const list = await fetch(`${NOTION}/blocks/${pageId}/children?page_size=100`, { headers: headers(token, false) });
-  if (!list.ok) throw new Error(`list children ${list.status}: ${await list.text()}`);
-  const blocks = ((await list.json()) as { results?: { id: string; type: string }[] }).results ?? [];
-
-  const ai = blocks.findIndex((b) => b.id === anchorId);
-  let deletedOld = 0;
-  if (ai >= 0) {
-    for (const b of blocks.slice(ai + 1)) {
-      if (b.type !== "embed") continue;
-      const del = await fetch(`${NOTION}/blocks/${b.id}`, { method: "DELETE", headers: headers(token, false) });
-      if (del.ok) deletedOld += 1;
-    }
-  }
-
-  const body = { children: [{ type: "embed", embed: { type: "file_upload", file_upload: { id: fileUploadId } } }] };
-  const res = await fetch(`${NOTION}/blocks/${pageId}/children`, { method: "PATCH", headers: headers(token), body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`insert embed ${res.status}: ${await res.text()}`);
-  const newId = ((await res.json()) as { results?: { id?: string }[] }).results?.[0]?.id ?? "";
-  return { blockId: newId, deletedOld, usedAnchor: ai >= 0 };
+async function listChildren(token: string, blockId: string): Promise<Block[]> {
+  const out: Block[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = `${NOTION}/blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${cursor}` : ""}`;
+    const r = await fetch(url, { headers: headers(token, false) });
+    if (!r.ok) throw new Error(`list children ${r.status}: ${await r.text()}`);
+    const j = (await r.json()) as { results?: Block[]; has_more?: boolean; next_cursor?: string | null };
+    out.push(...(j.results ?? []));
+    cursor = j.has_more ? (j.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return out;
 }
 
-export type MultiReplaceResult = { blockIds: string[]; deletedOld: number; usedAnchor: boolean };
+async function appendChild(token: string, parentId: string, child: unknown): Promise<string> {
+  const r = await fetch(`${NOTION}/blocks/${parentId}/children`, { method: "PATCH", headers: headers(token), body: JSON.stringify({ children: [child] }) });
+  if (!r.ok) throw new Error(`append child ${r.status}: ${await r.text()}`);
+  return ((await r.json()) as { results?: { id?: string }[] }).results?.[0]?.id ?? "";
+}
 
-/**
- * Replace ALL report embeds after `anchorId` with fresh file-backed embeds, in order.
- * Deletes every embed positioned after the anchor, then appends the given uploads at the
- * page end (as the trailing blocks, they keep their order right after the anchor). Lets
- * several reports (each its own uploaded HTML) share one managed region idempotently.
- */
-export async function replaceReportEmbeds(token: string, pageId: string, anchorId: string, fileUploadIds: string[]): Promise<MultiReplaceResult> {
-  const list = await fetch(`${NOTION}/blocks/${pageId}/children?page_size=100`, { headers: headers(token, false) });
-  if (!list.ok) throw new Error(`list children ${list.status}: ${await list.text()}`);
-  const blocks = ((await list.json()) as { results?: { id: string; type: string }[] }).results ?? [];
+async function deleteBlock(token: string, id: string): Promise<boolean> {
+  const r = await fetch(`${NOTION}/blocks/${id}`, { method: "DELETE", headers: headers(token, false) });
+  return r.ok;
+}
 
-  const ai = blocks.findIndex((b) => b.id === anchorId);
-  let deletedOld = 0;
-  if (ai >= 0) {
-    for (const b of blocks.slice(ai + 1)) {
-      if (b.type !== "embed") continue;
-      const del = await fetch(`${NOTION}/blocks/${b.id}`, { method: "DELETE", headers: headers(token, false) });
-      if (del.ok) deletedOld += 1;
+type FoundEmbed = { embedId: string; parentId: string; parentIsPage: boolean; filename: string };
+
+/** Walk the page's block tree (bounded depth) and collect every embed whose URL names one of `filenames`. */
+async function findReportEmbeds(token: string, pageId: string, filenames: string[]): Promise<FoundEmbed[]> {
+  const out: FoundEmbed[] = [];
+  async function walk(parentId: string, depth: number): Promise<void> {
+    if (depth > 3) return;
+    for (const b of await listChildren(token, parentId)) {
+      if (b.type === "embed") {
+        const url = b.embed?.url ?? "";
+        const filename = filenames.find((f) => url.includes(f));
+        if (filename) out.push({ embedId: b.id, parentId, parentIsPage: parentId === pageId, filename });
+      } else if (b.has_children) {
+        await walk(b.id, depth + 1);
+      }
     }
   }
+  await walk(pageId, 0);
+  return out;
+}
 
-  const children = fileUploadIds.map((id) => ({ type: "embed", embed: { type: "file_upload", file_upload: { id } } }));
-  const res = await fetch(`${NOTION}/blocks/${pageId}/children`, { method: "PATCH", headers: headers(token), body: JSON.stringify({ children }) });
-  if (!res.ok) throw new Error(`insert embeds ${res.status}: ${await res.text()}`);
-  const blockIds = ((await res.json()) as { results?: { id?: string }[] }).results?.map((r) => r.id ?? "") ?? [];
-  return { blockIds, deletedOld, usedAnchor: ai >= 0 };
+/** Create a synced-block container (the embed inside) at the page end; return the container id. */
+async function createContainer(token: string, pageId: string, fileUploadId: string): Promise<string> {
+  return appendChild(token, pageId, { type: "synced_block", synced_block: { synced_from: null, children: [embedChild(fileUploadId)] } });
+}
+
+export type Report = { filename: string; fileUploadId: string };
+export type SyncResult = { updated: string[]; created: string[]; migrated: string[]; deletedDupes: number };
+
+/**
+ * Idempotently point each report's embed at fresh HTML, preserving where the user put it:
+ *   • in a container already  → swap the embed inside that container (container stays put)
+ *   • bare top-level embed    → wrap in a new container at page end, drop the old (migrate)
+ *   • absent                  → create a new container at page end (drag it into place once)
+ * Extra embeds for the same report (e.g. a stale duplicate) are deleted.
+ */
+export async function syncReportEmbeds(token: string, pageId: string, reports: Report[]): Promise<SyncResult> {
+  const res: SyncResult = { updated: [], created: [], migrated: [], deletedDupes: 0 };
+  const found = await findReportEmbeds(token, pageId, reports.map((r) => r.filename));
+
+  for (const rep of reports) {
+    // Prefer an embed already inside a container; treat the rest as duplicates to remove.
+    const matches = found.filter((f) => f.filename === rep.filename).sort((a, b) => Number(a.parentIsPage) - Number(b.parentIsPage));
+    const primary = matches[0];
+    for (const dupe of matches.slice(1)) if (await deleteBlock(token, dupe.embedId)) res.deletedDupes += 1;
+
+    if (primary && !primary.parentIsPage) {
+      await appendChild(token, primary.parentId, embedChild(rep.fileUploadId)); // add fresh inside the container…
+      await deleteBlock(token, primary.embedId); // …then remove the stale one
+      res.updated.push(rep.filename);
+    } else {
+      await createContainer(token, pageId, rep.fileUploadId);
+      if (primary) { await deleteBlock(token, primary.embedId); res.migrated.push(rep.filename); }
+      else res.created.push(rep.filename);
+    }
+  }
+  return res;
 }
