@@ -526,7 +526,8 @@ export async function renderProbabilityView(
     periods.forEach((q, i) => (h2[P0 + i] = q));
     grid.push(h2);
     groups.push({ start: 1, end: 9 }); // collapsible top block (rows 2-9: Stats + spacer + repeated header)
-    for (let r = 0; r <= 8; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: GREY_ROW_TEXT }); // rows 1-9 → #efefef
+    // Top block: #efefef bg; header row (row 1, incl. the merged A/B/C labels) black text, the rest grey.
+    for (let r = 0; r <= 8; r++) coloredRows.push({ row: r, bg: SUMMARY_BG, fg: r === 0 ? BLACK : GREY_ROW_TEXT });
   }
 
   // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
