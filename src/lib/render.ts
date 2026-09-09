@@ -99,6 +99,7 @@ const STAGE_COLORS: Record<number, unknown> = {
   60: LIGHT_BLUE,
   40: LIGHT_PURPLE,
   20: LIGHT_PURPLE,
+  10: LIGHT_MAGENTA,
   0: LIGHT_MAGENTA,
 };
 
@@ -442,8 +443,10 @@ export async function renderProbabilityView(
   const sumPos = new Map<number, SumRow>();
   for (const s of orderedStages) {
     const n = byProb.get(s)?.length ?? 0;
+    // Cascade tiers always reserve a header row (even with 0 deals) so a tier like 10% with no
+    // scheduled deals yet renders as a labeled section, not a header-less summary block.
+    if (n > 0 || (showSummary && CASCADE_STAGES.includes(s))) cur += 1; // stage header row
     if (n > 0) {
-      cur += 1; // stage header row
       dealPos.set(s, { start: cur, end: cur + n - 1 });
       cur += n;
     }
@@ -533,9 +536,12 @@ export async function renderProbabilityView(
   // Body: each stage's deal group (collapsible), then its summary rows at the bottom of that stage.
   for (const s of orderedStages) {
     const stageDeals = byProb.get(s) ?? [];
-    if (stageDeals.length) {
+    // Header shows for any non-empty stage, and for every cascade tier even when empty (labeled section).
+    if (stageDeals.length || (showSummary && CASCADE_STAGES.includes(s))) {
       grid.push([`'${s}%`, ...Array(width - 1).fill("")]); // leading ' forces text
       coloredRows.push({ row: grid.length - 1, bg: STAGE_COLORS[s] ?? GREEN });
+    }
+    if (stageDeals.length) {
       const contentStart = grid.length;
       for (const d of stageDeals.sort((x, y) => x.clientPartner.localeCompare(y.clientPartner) || x.dealTitle.localeCompare(y.dealTitle))) {
         const bp = dealByPeriod(d, periods, periodOf);

@@ -35,7 +35,7 @@ function inWindow(d: DealAgg, quarters: Set<string>, weighted: boolean): number 
 }
 
 /** Probability tiers, high → low, matching the sheet's stage groups (Pipeline View Summary cascade). */
-export const CASCADE_STAGES = [100, 80, 60, 40, 20, 0];
+export const CASCADE_STAGES = [100, 80, 60, 40, 20, 10, 0];
 
 export function computeWindow(deals: DealAgg[], targets: Map<string, number>, quarters: string[], label: string): WindowStats {
   const qset = new Set(quarters);
