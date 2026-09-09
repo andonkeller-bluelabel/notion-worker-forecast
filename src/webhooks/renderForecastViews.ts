@@ -73,7 +73,7 @@ worker.webhook("renderForecastViews", {
           console.log("[forecast] render skipped — another render is already in flight");
           continue;
         }
-        const msg = `:page_facing_up: *Forecast views rendered* — ${dealCount} deals${openCount ? ` (+${openCount} open, unscheduled → Pipeline)` : ""} → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${dealCount} deals${openCount ? ` (+${openCount} open, unscheduled)` : ""} → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {
@@ -86,12 +86,12 @@ worker.webhook("renderForecastViews", {
       async function renderAll(token: string, sheetId: string, notion: Parameters<typeof readSegments>[0], rollover: boolean): Promise<void> {
         const deals = aggregateDeals(await readSegments(notion));
         dealCount = deals.length;
-        // Open-stage deals with no revenue schedule yet — shown in the Pipeline (probability) view only,
-        // at $0, so early pipeline is visible before it's scheduled. Kept out of the revenue-organized views.
+        // Open-stage deals with no revenue schedule yet — shown at $0 in the Pipeline and Client Partner
+        // views so early pipeline is visible before it's scheduled. Kept out of Weighted Monthly.
         const have = new Set(deals.map((d) => d.dealId));
         const placeholders = (await readOpenPlaceholderDeals(notion)).filter((d) => !have.has(d.dealId));
         openCount = placeholders.length;
-        const pipelineDeals = [...deals, ...placeholders];
+        const dealsWithOpen = [...deals, ...placeholders];
         const targets = await readTargets(notion);
 
         const quarters = quartersRange();
@@ -116,8 +116,8 @@ worker.webhook("renderForecastViews", {
           return title ? { sheetId: id, title } : { sheetId: await ensureTab(token, sheetId, canonical), title: canonical };
         };
 
-        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client Partner"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras, rollover);
-        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline"), pipelineDeals, quarters, monthToQuarter, PIPELINE_W, targets, clientExtras.visiblePeriods);
+        await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client Partner"), dealsWithOpen, quarters, monthToQuarter, CLIENT_W, clientExtras, rollover);
+        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline"), dealsWithOpen, quarters, monthToQuarter, PIPELINE_W, targets, clientExtras.visiblePeriods);
         await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);
         await deleteTabsById(token, sheetId, ORPHAN_TAB_IDS);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
