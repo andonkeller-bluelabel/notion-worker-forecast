@@ -100,7 +100,7 @@ worker.webhook("renderForecastViews", {
         // Monthly headers use the "2026.09" dot form (matching the "2026.Qx" quarters);
         // monthLabel converts a byMonth key ("2026-09") to the same, so lookups still match.
         const monthLabel = (m: string) => m.replace("-", ".");
-        const months = monthsFrom(13).map(monthLabel); // this month + 12
+        const months = monthsFrom(18).map(monthLabel); // this month + next 17 = 18-month rolling window
 
         // Resolve each view's current title from its stable id (follows renames); recreate only if deleted.
         const byId = new Map((await getSheetMeta(token, sheetId)).map((m) => [m.sheetId, m.title]));
