@@ -8,6 +8,7 @@
 import type { Client } from "@notionhq/client";
 import { notionPropertyToDate, notionPropertyToString } from "./notionProps.js";
 import type { Segment } from "./forecast.js";
+import type { DealAgg } from "./render.js";
 
 /** Deal Revenue Schedules data source (collection) id. */
 export const DEAL_REVENUE_SCHEDULES_DS = "37bf6504-1608-4bf0-af10-c6e5123cc618";
@@ -123,6 +124,46 @@ export async function readTargets(notion: Client): Promise<Map<string, number>> 
       if (!props) continue;
       const q = (notionPropertyToString(props["Name"]) ?? "").trim();
       if (q) out.set(q, numberOf(props["Revenue Target"]));
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return out;
+}
+
+/** Deals data source (collection) id — the pipeline's deal records (one per deal). */
+export const DEALS_DS = "ee89a6dd-be27-4bc5-bc5f-86b6ef40be2b";
+
+/**
+ * Open-stage deals that have NO revenue schedule yet, as zero-value DealAgg placeholders so they
+ * still surface in the Pipeline view (in their probability tier, at $0 across every period). "Open"
+ * = 0 < Stage Probability < 1, which excludes Won (1.0) and dead/parked stages (0), and is robust to
+ * stage renames. Deals that already have schedules are skipped — they arrive via readSegments with
+ * real, time-phased revenue.
+ */
+export async function readOpenPlaceholderDeals(notion: Client): Promise<DealAgg[]> {
+  const out: DealAgg[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({ data_source_id: DEALS_DS, start_cursor: cursor, page_size: 100 });
+    for (const page of res.results) {
+      const id = (page as { id?: string }).id ?? "";
+      const props = (page as { properties?: Props }).properties;
+      if (!id || !props) continue;
+      const prob = numberOf(props["Stage Probability"]);
+      if (!(prob > 0 && prob < 1)) continue; // open stages only — not Won (1.0), not dead/0%
+      const sched = props["📆 Deal Revenue Schedule"] as { type?: string; relation?: unknown[] } | undefined;
+      if (sched?.type === "relation" && (sched.relation?.length ?? 0) > 0) continue; // already scheduled → via segments
+      out.push({
+        dealId: id,
+        dealTitle: notionPropertyToString(props["Deal Title"]) ?? "",
+        dealUrl: `https://www.notion.so/${id.replace(/-/g, "")}`,
+        clientPartner: notionPropertyToString(props["Client Partner (Text)"]) ?? "",
+        client: notionPropertyToString(props["Account Name"]) ?? "",
+        contractType: selectName(props["Contract Format"]),
+        probability: prob,
+        byMonth: new Map(),
+        byMonthW: new Map(),
+      });
     }
     cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
   } while (cursor);

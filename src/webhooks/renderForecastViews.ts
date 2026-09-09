@@ -9,7 +9,7 @@
  */
 
 import { worker, googleAuth } from "../worker.js";
-import { readSegments, readTargets } from "../lib/notionForecast.js";
+import { readSegments, readTargets, readOpenPlaceholderDeals } from "../lib/notionForecast.js";
 import { aggregateDeals, renderPartnerClientView, renderProbabilityView, renderWeightedPipeline, ACTIONS_COL, LAST_WEEK_COL, REVENUE_COL, type Target } from "../lib/render.js";
 import { quartersRange, monthsFrom, monthToQuarter } from "../lib/forecast.js";
 import { deleteTabs, deleteTabsById, getSheetMeta, ensureTab } from "../lib/sheets.js";
@@ -48,6 +48,7 @@ worker.webhook("renderForecastViews", {
       // Weekly rollover (triggered via {"rollover":true} payload): shift Actions to Grow → Last Week's Actions.
       const rollover = (_event as { body?: Record<string, unknown> }).body?.rollover === true;
       let dealCount = 0;
+      let openCount = 0;
       let skipped = false;
       try {
         if (!sheetId) throw new Error("FORECAST_SHEET_ID not set");
@@ -72,7 +73,7 @@ worker.webhook("renderForecastViews", {
           console.log("[forecast] render skipped — another render is already in flight");
           continue;
         }
-        const msg = `:page_facing_up: *Forecast views rendered* — ${dealCount} deals → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
+        const msg = `:page_facing_up: *Forecast views rendered* — ${dealCount} deals${openCount ? ` (+${openCount} open, unscheduled → Pipeline)` : ""} → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
         console.log(`[forecast] ${msg}`);
         await postForecastOps(msg);
       } catch (err) {
@@ -85,6 +86,12 @@ worker.webhook("renderForecastViews", {
       async function renderAll(token: string, sheetId: string, notion: Parameters<typeof readSegments>[0], rollover: boolean): Promise<void> {
         const deals = aggregateDeals(await readSegments(notion));
         dealCount = deals.length;
+        // Open-stage deals with no revenue schedule yet — shown in the Pipeline (probability) view only,
+        // at $0, so early pipeline is visible before it's scheduled. Kept out of the revenue-organized views.
+        const have = new Set(deals.map((d) => d.dealId));
+        const placeholders = (await readOpenPlaceholderDeals(notion)).filter((d) => !have.has(d.dealId));
+        openCount = placeholders.length;
+        const pipelineDeals = [...deals, ...placeholders];
         const targets = await readTargets(notion);
 
         const quarters = quartersRange();
@@ -110,7 +117,7 @@ worker.webhook("renderForecastViews", {
         };
 
         await renderPartnerClientView(token, sheetId, await target(VIEW_TABS.clientView, "Client Partner"), deals, quarters, monthToQuarter, CLIENT_W, clientExtras, rollover);
-        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline"), deals, quarters, monthToQuarter, PIPELINE_W, targets, clientExtras.visiblePeriods);
+        await renderProbabilityView(token, sheetId, await target(VIEW_TABS.pipelineView, "Pipeline"), pipelineDeals, quarters, monthToQuarter, PIPELINE_W, targets, clientExtras.visiblePeriods);
         await renderWeightedPipeline(token, sheetId, await target(VIEW_TABS.weightedMonthly, "Weighted Monthly"), deals, months, monthLabel, WEIGHTED_MONTHLY_W);
         await deleteTabsById(token, sheetId, ORPHAN_TAB_IDS);
         await deleteTabs(token, sheetId, OBSOLETE_TABS);
