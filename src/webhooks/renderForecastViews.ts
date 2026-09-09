@@ -73,9 +73,9 @@ worker.webhook("renderForecastViews", {
           console.log("[forecast] render skipped — another render is already in flight");
           continue;
         }
-        const msg = `:page_facing_up: *Forecast views rendered* — ${dealCount} deals${openCount ? ` (+${openCount} open, unscheduled)` : ""} → Client Partner, Pipeline, Weighted Monthly.${rollover ? " (weekly actions rolled over)" : ""}`;
-        console.log(`[forecast] ${msg}`);
-        await postForecastOps(msg);
+        // Success is intentionally not posted to Slack (too noisy — renders fire on every menu click);
+        // the worker log keeps a trace, and failures still alert #forecast-ops via the catch below.
+        console.log(`[forecast] views rendered — ${dealCount} deals${openCount ? ` (+${openCount} open, unscheduled)` : ""}${rollover ? " (weekly actions rolled over)" : ""}`);
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         console.error("[forecast] render failed:", err);
