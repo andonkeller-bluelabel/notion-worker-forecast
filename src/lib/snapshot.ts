@@ -24,12 +24,15 @@ export const SNAPSHOT_HEADERS: string[] = [
   ...QUARTERS,
 ];
 
-/** Monday (UTC) of the week containing `d`, as "YYYY-MM-DD" — the idempotency key for a weekly snapshot. */
-export function weekKey(d: Date): string {
-  const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const day = dt.getUTCDay(); // 0 Sun … 6 Sat
-  dt.setUTCDate(dt.getUTCDate() + (day === 0 ? -6 : 1 - day));
-  return dt.toISOString().slice(0, 10);
+/**
+ * The snapshot's identity: the calendar date in America/New_York as "YYYY-MM-DD".
+ * Keying on the actual run date (not the week's Monday) makes snapshot_date the real
+ * day it was taken (e.g. a Tuesday), keeps re-runs on the same day idempotent, and lets
+ * a second weekly cadence (e.g. a Friday) coexist without overwriting the first.
+ */
+export function snapshotDate(d: Date = new Date()): string {
+  // en-CA renders YYYY-MM-DD; the ET time zone ensures a 2 PM ET run lands on that ET day.
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(d);
 }
 
 /** One row per deal: attributes + gross/weighted totals + gross per quarter. */
