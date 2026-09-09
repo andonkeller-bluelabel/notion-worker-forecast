@@ -3,7 +3,7 @@
  * append-only "Snapshots" tab. One row per deal (see lib/snapshot.ts). Idempotent per
  * day: re-running on the same ET date replaces that date's rows instead of duplicating,
  * so distinct days (e.g. a Tuesday and a Friday) accumulate. Errors → #forecast-ops.
- * Scheduled via a Google Apps Script time trigger (Tuesdays ~2 PM ET).
+ * Scheduled via a Google Apps Script time trigger (Tuesdays ~4 PM ET).
  */
 
 import { worker, googleAuth } from "../worker.js";
