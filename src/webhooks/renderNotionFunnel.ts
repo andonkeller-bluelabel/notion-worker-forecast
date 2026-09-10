@@ -7,14 +7,16 @@
  * uploads them, and replaces the managed embed region idempotently. Errors → #forecast-ops.
  */
 
-import { worker } from "../worker.js";
+import { worker, googleAuth } from "../worker.js";
 import { readSegments, readTargets } from "../lib/notionForecast.js";
 import { aggregateDeals } from "../lib/render.js";
-import { monthToQuarter } from "../lib/forecast.js";
+import { monthToQuarter, quartersRange } from "../lib/forecast.js";
 import { computeWindow } from "../lib/coverage.js";
+import { computeGlidepath, type GlideSeries } from "../lib/glidepath.js";
 import { renderCoverageHtml } from "../lib/coverageHtml.js";
 import { computePlanRows } from "../lib/planVsPipeline.js";
 import { renderPlanHtml } from "../lib/planHtml.js";
+import { getValuesUnformatted } from "../lib/sheets.js";
 import { uploadHtml, syncReportEmbeds } from "../lib/notionEmbed.js";
 import { postForecastOps } from "../lib/slack.js";
 
@@ -43,9 +45,26 @@ worker.webhook("renderNotionFunnel", {
         const asOf = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/New_York" });
         const curQuarter = monthToQuarter(`${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`);
 
-        // (B) Forecast vs Plan — all target quarters.
+        // Coverage glidepath for the current + next quarter (drives the expandable KPI charts).
+        // Read from the append-only Snapshots tab; resilient — if unavailable, the KPI cards just
+        // won't expand and the rest of the report still renders.
+        let glide: GlideSeries[] = [];
+        try {
+          const sheetId = process.env.FORECAST_SHEET_ID;
+          if (sheetId) {
+            const quarters = quartersRange();
+            const ci = quarters.indexOf(curQuarter);
+            const forQ = ci >= 0 ? quarters.slice(ci, ci + 2) : [];
+            const snapRows = await getValuesUnformatted(await googleAuth.accessToken(), sheetId, "Snapshots!A2:U100000");
+            glide = computeGlidepath(snapRows, targets, quarters, forQ);
+          }
+        } catch (e) {
+          console.warn("[forecast] glidepath unavailable:", e instanceof Error ? e.message : e);
+        }
+
+        // (B) Forecast vs Plan — all target quarters + coverage KPI cards (with glidepath) on top.
         const planRows = computePlanRows(segments, targets);
-        const htmlB = renderPlanHtml(planRows, { asOf, nowQuarter: curQuarter });
+        const htmlB = renderPlanHtml(planRows, { asOf, nowQuarter: curQuarter }, glide);
 
         // (A) Pipeline vs Target — coverage windows from the current quarter forward.
         const full = [...targets.keys()].sort().filter((q) => q >= curQuarter);

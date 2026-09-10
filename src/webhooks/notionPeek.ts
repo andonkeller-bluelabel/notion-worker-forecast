@@ -1,7 +1,6 @@
 /**
  * TEMPORARY — dumps the reporting page's block tree (containers + the embed inside
- * each, with its filename) so we can confirm the report embeds and their layout.
- * Delete after use.
+ * each, with its filename). Delete after use.
  */
 
 import { worker } from "../worker.js";
