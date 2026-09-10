@@ -8,14 +8,16 @@
  */
 
 import { worker, googleAuth } from "../worker.js";
-import { readSegments, readTargets } from "../lib/notionForecast.js";
+import { readSegments, readTargets, readStageCycles } from "../lib/notionForecast.js";
 import { aggregateDeals } from "../lib/render.js";
 import { monthToQuarter, quartersRange } from "../lib/forecast.js";
 import { computeWindow } from "../lib/coverage.js";
 import { computeGlidepath, type GlideSeries } from "../lib/glidepath.js";
+import { buildTemplates, buildBaseline } from "../lib/simulator.js";
 import { renderCoverageHtml } from "../lib/coverageHtml.js";
 import { computePlanRows } from "../lib/planVsPipeline.js";
 import { renderPlanHtml } from "../lib/planHtml.js";
+import { renderSimulatorHtml } from "../lib/simulatorHtml.js";
 import { getValuesUnformatted } from "../lib/sheets.js";
 import { uploadHtml, syncReportEmbeds } from "../lib/notionEmbed.js";
 import { postForecastOps } from "../lib/slack.js";
@@ -24,6 +26,7 @@ import { postForecastOps } from "../lib/slack.js";
 const PAGE_ID = "3d24ed00807880f0aa20f33754e60b61";
 const PLAN_FILE = "forecast_vs_plan.html";
 const COVERAGE_FILE = "pipeline_vs_target.html";
+const SIMULATOR_FILE = "gap_simulator.html";
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
@@ -77,10 +80,26 @@ worker.webhook("renderNotionFunnel", {
         // Swap each report's embed inside its own draggable container (matched by filename), so manual placement survives.
         const idB = await uploadHtml(token, htmlB, PLAN_FILE);
         const idA = await uploadHtml(token, htmlA, COVERAGE_FILE);
-        const r = await syncReportEmbeds(token, PAGE_ID, [
+
+        // (C) Gap-closing simulator — client revenue-arc templates + coverage baseline, driven in-browser.
+        // Resilient: if the arc/cycle read fails, the other two reports still publish.
+        let idSim: string | null = null;
+        try {
+          const wonSegs = await readSegments(notion, { includeArchived: true });
+          let cycles = new Map<string, { first: string; won: string | null }>();
+          try { cycles = await readStageCycles(notion); } catch (e) { console.warn("[forecast] stage cycles unavailable:", e instanceof Error ? e.message : e); }
+          const htmlC = renderSimulatorHtml(buildTemplates(wonSegs, cycles), buildBaseline(deals, targets, quartersRange()), { asOf, curQuarter, today: now.toISOString().slice(0, 10) });
+          idSim = await uploadHtml(token, htmlC, SIMULATOR_FILE);
+        } catch (e) {
+          console.warn("[forecast] simulator unavailable:", e instanceof Error ? e.message : e);
+        }
+
+        const reports = [
           { filename: PLAN_FILE, fileUploadId: idB },
           { filename: COVERAGE_FILE, fileUploadId: idA },
-        ]);
+        ];
+        if (idSim) reports.push({ filename: SIMULATOR_FILE, fileUploadId: idSim });
+        const r = await syncReportEmbeds(token, PAGE_ID, reports);
 
         const msg = `:bar_chart: *Notion reports updated* — Forecast vs Plan + Pipeline vs Target · near ${pct(nearW.coveredPct)} covered, gap ${(fullW.gap / 1e6).toFixed(1)}M.`;
         const fresh = [...r.created, ...r.migrated];
