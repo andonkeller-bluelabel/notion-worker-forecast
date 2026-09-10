@@ -170,14 +170,14 @@ export async function readOpenPlaceholderDeals(notion: Client): Promise<DealAgg[
   return out;
 }
 
-/** Query every non-archived Deal Revenue Schedule row → Segment[]. */
-export async function readSegments(notion: Client): Promise<Segment[]> {
+/** Query Deal Revenue Schedule rows → Segment[]. Non-archived only, unless includeArchived (for historical arcs). */
+export async function readSegments(notion: Client, opts?: { includeArchived?: boolean }): Promise<Segment[]> {
   const out: Segment[] = [];
   let cursor: string | undefined;
   do {
     const res = await notion.dataSources.query({
       data_source_id: DEAL_REVENUE_SCHEDULES_DS,
-      filter: { property: P.archived, checkbox: { equals: false } },
+      ...(opts?.includeArchived ? {} : { filter: { property: P.archived, checkbox: { equals: false } } }),
       start_cursor: cursor,
       page_size: 100,
     });
@@ -188,4 +188,30 @@ export async function readSegments(notion: Client): Promise<Segment[]> {
     cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
   } while (cursor);
   return out;
+}
+
+/** Deal Stage Changes data source — one row per stage transition (Deal, Stage, Date). */
+export const DEAL_STAGE_CHANGES_DS = "d893ad12-e8c9-4ce5-8aec-677b09c1c025";
+
+/** Per deal: the earliest recorded stage-change date and the (latest) date it reached "Won". */
+export async function readStageCycles(notion: Client): Promise<Map<string, { first: string; won: string | null }>> {
+  const byDeal = new Map<string, { first: string; won: string | null }>();
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({ data_source_id: DEAL_STAGE_CHANGES_DS, start_cursor: cursor, page_size: 100 });
+    for (const page of res.results) {
+      const props = (page as { properties?: Props }).properties;
+      if (!props) continue;
+      const dealId = relationId(props["Deal"]);
+      const d = props["Date"] as { type?: string; created_time?: string } | undefined;
+      const date = d?.type === "created_time" && typeof d.created_time === "string" ? d.created_time.slice(0, 10) : "";
+      if (!dealId || !date) continue;
+      const cur = byDeal.get(dealId) ?? { first: date, won: null };
+      if (date < cur.first) cur.first = date;
+      if (selectName(props["Stage"]) === "Won" && (!cur.won || date > cur.won)) cur.won = date;
+      byDeal.set(dealId, cur);
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return byDeal;
 }

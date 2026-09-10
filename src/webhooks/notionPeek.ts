@@ -1,34 +1,28 @@
 /**
- * TEMPORARY — dumps the reporting page's block tree (containers + the embed inside
- * each, with its filename). Delete after use.
+ * TEMPORARY — computes and dumps the gap-simulator data (client revenue-arc templates
+ * + current per-quarter baseline) as JSON, to seed the simulator prototype. Delete after use.
  */
 
 import { worker } from "../worker.js";
-
-const PAGE_ID = "3d24ed00807880f0aa20f33754e60b61";
-const VERSION = "2026-03-11";
-const H = (token: string) => ({ Authorization: `Bearer ${token}`, "Notion-Version": VERSION });
-
-type Block = { id: string; type: string; has_children?: boolean; embed?: { url?: string } };
-const fileOf = (b: Block) => b.embed?.url?.match(/\/([^/?]+\.html)\?/)?.[1] ?? "";
-
-async function kids(token: string, id: string): Promise<Block[]> {
-  const r = await fetch(`https://api.notion.com/v1/blocks/${id}/children?page_size=100`, { headers: H(token) });
-  return ((await r.json()) as { results?: Block[] }).results ?? [];
-}
+import { readSegments, readTargets, readStageCycles } from "../lib/notionForecast.js";
+import { aggregateDeals } from "../lib/render.js";
+import { buildTemplates, buildBaseline } from "../lib/simulator.js";
+import { quartersRange } from "../lib/forecast.js";
 
 worker.webhook("notionPeek", {
-  title: "Notion Peek (temp)",
-  description: "Dumps the reporting page block tree. Temporary.",
-  execute: async () => {
-    const token = process.env.NOTION_API_TOKEN!;
-    const top = await kids(token, PAGE_ID);
-    console.log(`[peek] page children=${top.length}`);
-    for (const b of top) {
-      console.log(`[peek] • ${b.type === "embed" ? `embed ${fileOf(b)}` : b.type} id=${b.id}`);
-      if (b.type !== "embed" && b.has_children) {
-        for (const c of await kids(token, b.id)) console.log(`[peek]     └ ${c.type === "embed" ? `embed ${fileOf(c)}` : c.type} id=${c.id}`);
-      }
-    }
+  title: "Sim Data Dump (temp)",
+  description: "Dumps simulator templates + baseline. Temporary.",
+  execute: async (_events, { notion }) => {
+    const wonSegs = await readSegments(notion, { includeArchived: true });
+    let cycles = new Map<string, { first: string; won: string | null }>();
+    try { cycles = await readStageCycles(notion); } catch (e) { console.log(`[sim] stage cycles unavailable (share the Deal Stage Changes DB): ${e instanceof Error ? e.message : e}`); }
+    const templates = buildTemplates(wonSegs, cycles);
+    const active = aggregateDeals(await readSegments(notion));
+    const targets = await readTargets(notion);
+    const baseline = buildBaseline(active, targets, quartersRange());
+    console.log(`[sim] templates=${templates.length} · stageCycles=${cycles.size}`);
+    templates.forEach((t) => console.log(`[sim]   ${t.name} · $${t.total.toLocaleString()} · ${t.deals} deals · cycle=${t.cycleWeeks ?? "?"}w · from ${t.firstStart} · arc[${t.arc.length}]`));
+    console.log(`[sim] TEMPLATES=${JSON.stringify(templates)}`);
+    console.log(`[sim] BASELINE=${JSON.stringify(baseline)}`);
   },
 });
