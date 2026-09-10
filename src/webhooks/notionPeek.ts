@@ -21,7 +21,7 @@ worker.webhook("notionPeek", {
     const targets = await readTargets(notion);
     const baseline = buildBaseline(active, targets, quartersRange());
     console.log(`[sim] templates=${templates.length} · stageCycles=${cycles.size}`);
-    templates.forEach((t) => console.log(`[sim]   ${t.name} · $${t.total.toLocaleString()} · ${t.deals} deals · cycle=${t.cycleWeeks ?? "?"}w · from ${t.firstStart} · arc[${t.arc.length}]`));
+    templates.forEach((t) => console.log(`[sim]   ${t.name} · $${t.total.toLocaleString()} · ${t.deals} deals · cycle=${t.cycleWeeks ?? "?"}w · landed ${t.landedWon ?? "?"} · arc[${t.arc.length}]`));
     console.log(`[sim] TEMPLATES=${JSON.stringify(templates)}`);
     console.log(`[sim] BASELINE=${JSON.stringify(baseline)}`);
   },

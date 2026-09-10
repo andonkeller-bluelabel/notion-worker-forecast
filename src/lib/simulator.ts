@@ -56,9 +56,12 @@ export type Template = {
   deals: number;
   cycleWeeks: number | null; // landing deal's first-stage → Won, from Deal Stage Changes
   firstStart: string; // ISO month the client's revenue began
+  landedWon: string | null; // ISO month the client's first deal was won (true "new logo" date)
 };
 
 const isWon = (s: Segment) => s.stageProbability >= 0.999;
+/** Deals below this BL number predate the new-logo window (old clients re-entered as forecasts). */
+const NEW_LOGO_BL_FLOOR = 360;
 
 /** Build one revenue arc per NEW-LOGO client account (first work in the last `windowMonths`). */
 export function buildTemplates(
@@ -79,8 +82,27 @@ export function buildTemplates(
 
   const out: Template[] = [];
   for (const [name, segs] of byAcct) {
+    const dealIds = [...new Set(segs.map((s) => s.dealId).filter(Boolean))];
     const firstStart = segs.map((s) => s.start!).sort()[0]!;
-    if (firstStart < cutISO) continue; // client's first work predates the window → not a new logo
+    if (firstStart < cutISO) continue; // client's first (retained) revenue predates the window
+    // Old clients whose only in-window rows are re-entered forecasts still slip through the date test,
+    // because their pre-2025 revenue isn't retained. The BL number (sequential deal id) is a reliable
+    // chronological proxy — exclude accounts whose earliest deal is below the new-logo floor.
+    const minBL = Math.min(...segs.map((s) => { const m = /BL(\d+)/.exec(s.dealTitle); return m ? Number(m[1]) : Infinity; }));
+    if (minBL < NEW_LOGO_BL_FLOOR) continue;
+    // Landing deal's sales cycle (earliest Won date in the stage history → its first stage). Only a
+    // fraction of deals are reliably timed, so this is best-effort; null where unknown.
+    let firstWon: string | null = null;
+    let cycleWeeks: number | null = null;
+    for (const id of dealIds) {
+      const c = cycles.get(id);
+      if (c?.won && (!firstWon || c.won < firstWon)) {
+        firstWon = c.won;
+        const w = Math.round((Date.parse(c.won) - Date.parse(c.first)) / (7 * MS_PER_DAY));
+        cycleWeeks = w > 0 ? w : null; // 0 = bulk-imported (no real gap) → treat as unknown
+      }
+    }
+
     const [fy, fm] = firstStart.slice(0, 7).split("-").map(Number);
     const arc: number[] = [];
     for (const s of segs)
@@ -91,11 +113,15 @@ export function buildTemplates(
       }
     for (let i = 0; i < arc.length; i++) if (arc[i] == null) arc[i] = 0;
     if (arc.length === 0) continue;
-    const total = arc.reduce((a, b) => a + b, 0);
-    const landing = segs.slice().sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""))[0]!;
-    const cyc = landing.dealId ? cycles.get(landing.dealId) : undefined;
-    const cycleWeeks = cyc?.won ? Math.max(0, Math.round((Date.parse(cyc.won) - Date.parse(cyc.first)) / (7 * MS_PER_DAY))) : null;
-    out.push({ name, arc: arc.map((v) => Math.round(v)), total: Math.round(total), deals: new Set(segs.map((s) => s.dealId)).size, cycleWeeks, firstStart: firstStart.slice(0, 7) });
+    out.push({
+      name,
+      arc: arc.map((v) => Math.round(v)),
+      total: Math.round(arc.reduce((a, b) => a + b, 0)),
+      deals: dealIds.length,
+      cycleWeeks,
+      firstStart: firstStart.slice(0, 7),
+      landedWon: firstWon ? firstWon.slice(0, 7) : null,
+    });
   }
   return out.sort((a, b) => b.total - a.total);
 }
